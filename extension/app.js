@@ -2,8 +2,9 @@
 
 const STORAGE_KEY = 'tomorinNewTabState';
 const DB_NAME = 'tomorin-new-tab';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const WALLPAPER_STORE = 'wallpapers';
+const ICON_STORE = 'icons';
 const WALLPAPER_ID = 'current';
 const PAGE_CAPACITY = 24;
 
@@ -69,14 +70,19 @@ let touchStartX = 0;
 let movedShortcutId = null;
 let pendingCustomIcon = '';
 let pendingIconUrl = '';
+let pendingIconCleared = false;
+let pendingOriginalUrl = '';
+const activeIconUrls = new Map();
 
 init();
 
 async function init() {
   state = await loadState();
+  await hydrateShortcutIcons();
   await applyWallpaper();
   bindEvents();
   render();
+  if (!globalThis.__TOMORIN_DISABLE_ICON_MIGRATION) cacheMissingShortcutIcons();
 }
 
 function bindEvents() {
@@ -89,6 +95,7 @@ function bindEvents() {
   els.urlInput.addEventListener('input', () => {
     if (!pendingCustomIcon) {
       pendingIconUrl = '';
+      pendingIconCleared = true;
       renderIconPreview();
     }
   });
@@ -128,6 +135,7 @@ function normalizeState(saved) {
       title: String(item.title).slice(0, 80),
       url: normalizeUrl(String(item.url)),
       size: ['small', 'medium', 'large'].includes(item.size) ? item.size : 'small',
+      iconId: typeof item.iconId === 'string' && item.iconId ? item.iconId : '',
       customIcon: isImageDataUrl(item.customIcon) ? item.customIcon : '',
       iconUrl: isHttpUrl(item.iconUrl) ? item.iconUrl : '',
       order: Number.isFinite(item.order) ? item.order : index,
@@ -253,6 +261,7 @@ function renderDots() {
 function iconSourceList(item) {
   const sources = [];
   const direct = directFaviconUrls(item.url);
+  if (item.iconId && activeIconUrls.has(item.iconId)) sources.push(activeIconUrls.get(item.iconId));
   if (isImageDataUrl(item.customIcon)) sources.push(item.customIcon);
   if (isHttpUrl(item.iconUrl)) sources.push(item.iconUrl);
   sources.push(direct.appleTouch);
@@ -425,6 +434,7 @@ async function handleDocumentClick(event) {
   if (action === 'clear-shortcut-icon') {
     pendingCustomIcon = '';
     pendingIconUrl = '';
+    pendingIconCleared = true;
     renderIconPreview();
     return;
   }
@@ -433,6 +443,7 @@ async function handleDocumentClick(event) {
     const selectedIcon = actionTarget.dataset.iconUrl || '';
     pendingCustomIcon = isImageDataUrl(selectedIcon) ? selectedIcon : '';
     pendingIconUrl = pendingCustomIcon ? '' : selectedIcon;
+    pendingIconCleared = false;
     renderIconPreview();
     return;
   }
@@ -474,6 +485,8 @@ function openShortcutDialog(id = null) {
   els.shortcutForm.elements.shortcutSize.value = size;
   pendingCustomIcon = item?.customIcon || '';
   pendingIconUrl = item?.iconUrl || '';
+  pendingIconCleared = false;
+  pendingOriginalUrl = item?.url || '';
   els.iconInput.value = '';
   renderIconPreview();
   els.deleteButton.hidden = !item;
@@ -485,6 +498,8 @@ function closeShortcutDialog() {
   editingId = null;
   pendingCustomIcon = '';
   pendingIconUrl = '';
+  pendingIconCleared = false;
+  pendingOriginalUrl = '';
   els.iconInput.value = '';
   els.dialog.close();
 }
@@ -497,28 +512,31 @@ async function handleShortcutSubmit(event) {
 
   if (!title || !url) return;
 
+  showToast('正在保存');
+
   if (editingId) {
-    state.shortcuts = state.shortcuts.map(item => (
-      item.id === editingId ? normalizeShortcutForSave({
-        ...item,
-        title,
-        url,
-        size,
-        customIcon: pendingCustomIcon,
-        iconUrl: pendingIconUrl,
-      }) : item
-    ));
-    showToast('已更新');
-  } else {
-    state.shortcuts.push(normalizeShortcutForSave({
-      id: crypto.randomUUID(),
+    const previous = state.shortcuts.find(shortcut => shortcut.id === editingId);
+    const next = await prepareShortcutForSave({
+      ...previous,
+      id: editingId,
       title,
       url,
       size,
-      customIcon: pendingCustomIcon,
-      iconUrl: pendingIconUrl,
+    }, previous);
+    state.shortcuts = state.shortcuts.map(item => (
+      item.id === editingId ? next : item
+    ));
+    showToast('已更新');
+  } else {
+    const id = crypto.randomUUID();
+    const next = await prepareShortcutForSave({
+      id,
+      title,
+      url,
+      size,
       order: state.shortcuts.length,
-    }));
+    }, null);
+    state.shortcuts.push(next);
     state.settings.currentPage = pageCount() - 1;
     showToast('已添加');
   }
@@ -530,10 +548,63 @@ async function handleShortcutSubmit(event) {
 
 function normalizeShortcutForSave(item) {
   const next = { ...item };
+  if (typeof next.iconId !== 'string' || !next.iconId) delete next.iconId;
   if (!isImageDataUrl(next.customIcon)) delete next.customIcon;
   if (!isHttpUrl(next.iconUrl)) delete next.iconUrl;
+  if (next.iconId) delete next.customIcon;
   if (next.customIcon) delete next.iconUrl;
   return next;
+}
+
+async function prepareShortcutForSave(item, previous) {
+  const next = normalizeShortcutForSave({
+    ...item,
+    iconId: previous?.iconId || '',
+    iconUrl: previous?.iconUrl || '',
+    customIcon: previous?.customIcon || '',
+  });
+  const urlChanged = !previous || previous.url !== item.url;
+
+  delete next.customIcon;
+
+  if (pendingCustomIcon) {
+    const blob = dataUrlToBlob(pendingCustomIcon);
+    await saveIconRecord(next.id, blob, 'custom');
+    setActiveIconUrl(next.id, blob);
+    next.iconId = next.id;
+    delete next.iconUrl;
+    return normalizeShortcutForSave(next);
+  }
+
+  const candidates = iconCandidatesForUrl(next.url, next.title);
+  const automaticCandidateUrls = candidates
+    .filter(candidate => candidate.kind !== 'fallback')
+    .map(candidate => candidate.url);
+  const selectedSources = pendingIconUrl ? [pendingIconUrl, ...automaticCandidateUrls] : [];
+  const automaticSources = (!previous || urlChanged || pendingIconCleared)
+    ? automaticCandidateUrls
+    : [];
+  const sourceUrls = [...new Set([...selectedSources, ...automaticSources].filter(Boolean))];
+
+  if (sourceUrls.length) {
+    const cached = await cacheFirstAvailableIcon(next.id, sourceUrls);
+    if (cached) {
+      next.iconId = next.id;
+      next.iconUrl = isHttpUrl(cached.sourceUrl) ? cached.sourceUrl : '';
+      return normalizeShortcutForSave(next);
+    }
+  }
+
+  if (previous?.iconId && !pendingIconCleared && !urlChanged) {
+    next.iconId = previous.iconId;
+    if (isHttpUrl(previous.iconUrl)) next.iconUrl = previous.iconUrl;
+    return normalizeShortcutForSave(next);
+  }
+
+  await deleteIconRecord(next.id);
+  delete next.iconId;
+  delete next.iconUrl;
+  return normalizeShortcutForSave(next);
 }
 
 async function handleShortcutIconUpload(event) {
@@ -548,6 +619,7 @@ async function handleShortcutIconUpload(event) {
   try {
     pendingCustomIcon = await imageFileToIconDataUrl(file, 256);
     pendingIconUrl = '';
+    pendingIconCleared = false;
     renderIconPreview();
     showToast('图标已选择');
   } catch {
@@ -565,9 +637,12 @@ function renderIconPreview() {
     return;
   }
 
-  const previewUrl = pendingIconUrl || highResolutionFaviconUrl(url);
+  const existing = editingId ? state.shortcuts.find(shortcut => shortcut.id === editingId) : null;
+  const existingIconUrl = existing?.iconId && activeIconUrls.get(existing.iconId);
+  const canUseExisting = existingIconUrl && !pendingIconCleared && url === pendingOriginalUrl;
+  const previewUrl = pendingIconUrl || (canUseExisting ? existingIconUrl : iconCandidatesForUrl(url, els.titleInput.value)[0]?.url);
   els.iconPreview.innerHTML = `<img src="${escapeHtml(previewUrl)}" alt="">`;
-  els.clearIconButton.hidden = !pendingIconUrl;
+  els.clearIconButton.hidden = !(pendingIconUrl || canUseExisting);
 }
 
 function renderIconCandidates(url) {
@@ -642,6 +717,7 @@ async function deleteEditingShortcut() {
   card?.classList.add('removing');
   await sleep(card ? 220 : 0);
   state.shortcuts = state.shortcuts.filter(item => item.id !== idToDelete);
+  await deleteIconRecord(idToDelete);
   await saveState();
   showToast('已删除');
   render();
@@ -914,6 +990,16 @@ function isImageDataUrl(value) {
     && (/^data:image\/[a-z0-9.+-]+;base64,/i.test(value) || /^data:image\/svg\+xml,/i.test(value));
 }
 
+function isFetchableIconUrl(value) {
+  if (typeof value !== 'string') return false;
+  try {
+    const parsed = new URL(value);
+    return ['http:', 'https:', 'chrome-extension:'].includes(parsed.protocol);
+  } catch {
+    return false;
+  }
+}
+
 function isHttpUrl(value) {
   if (typeof value !== 'string') return false;
   try {
@@ -999,24 +1085,29 @@ function openDb() {
     request.onupgradeneeded = () => {
       const db = request.result;
       if (!db.objectStoreNames.contains(WALLPAPER_STORE)) db.createObjectStore(WALLPAPER_STORE);
+      if (!db.objectStoreNames.contains(ICON_STORE)) db.createObjectStore(ICON_STORE, { keyPath: 'id' });
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
   });
 }
 
-async function withWallpaperStore(mode, callback) {
+async function withObjectStore(storeName, mode, callback) {
   const db = await openDb();
   try {
     return await new Promise((resolve, reject) => {
-      const tx = db.transaction(WALLPAPER_STORE, mode);
-      const store = tx.objectStore(WALLPAPER_STORE);
+      const tx = db.transaction(storeName, mode);
+      const store = tx.objectStore(storeName);
       callback(store, resolve, reject);
       tx.onerror = () => reject(tx.error);
     });
   } finally {
     db.close();
   }
+}
+
+async function withWallpaperStore(mode, callback) {
+  return await withObjectStore(WALLPAPER_STORE, mode, callback);
 }
 
 async function saveWallpaperBlob(blob) {
@@ -1038,6 +1129,133 @@ async function getWallpaperBlob() {
 async function deleteWallpaperBlob() {
   await withWallpaperStore('readwrite', (store, resolve, reject) => {
     const request = store.delete(WALLPAPER_ID);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function hydrateShortcutIcons() {
+  const ids = new Set(state.shortcuts.map(item => item.iconId).filter(Boolean));
+  for (const id of activeIconUrls.keys()) {
+    if (!ids.has(id)) revokeActiveIconUrl(id);
+  }
+
+  await Promise.all([...ids].map(async id => {
+    if (activeIconUrls.has(id)) return;
+    const record = await getIconRecord(id);
+    if (record?.blob) setActiveIconUrl(id, record.blob);
+  }));
+}
+
+async function cacheMissingShortcutIcons() {
+  let changed = false;
+  for (const item of state.shortcuts) {
+    if (item.iconId) continue;
+    const sources = iconCandidatesForUrl(item.url, item.title)
+      .filter(candidate => candidate.kind !== 'fallback')
+      .map(candidate => candidate.url);
+    const cached = await cacheFirstAvailableIcon(item.id, sources);
+    if (!cached) continue;
+    item.iconId = item.id;
+    item.iconUrl = isHttpUrl(cached.sourceUrl) ? cached.sourceUrl : '';
+    changed = true;
+  }
+
+  if (changed) {
+    await saveState();
+    render();
+  }
+}
+
+async function cacheFirstAvailableIcon(id, sourceUrls) {
+  for (const sourceUrl of sourceUrls) {
+    try {
+      const blob = await iconSourceToBlob(sourceUrl);
+      await saveIconRecord(id, blob, sourceUrl);
+      setActiveIconUrl(id, blob);
+      return { sourceUrl, blob };
+    } catch {
+      // Try the next candidate; favicon endpoints are often inconsistent.
+    }
+  }
+  return null;
+}
+
+async function iconSourceToBlob(sourceUrl) {
+  if (isImageDataUrl(sourceUrl)) return dataUrlToBlob(sourceUrl);
+  if (!isFetchableIconUrl(sourceUrl)) throw new Error('Unsupported icon source');
+
+  const response = await fetch(sourceUrl, {
+    cache: 'force-cache',
+    credentials: 'omit',
+  });
+  if (!response.ok) throw new Error(`Icon request failed: ${response.status}`);
+
+  const blob = await response.blob();
+  if (!blob.size) throw new Error('Empty icon response');
+  if (blob.type.startsWith('image/')) return blob;
+
+  return new Blob([await blob.arrayBuffer()], { type: guessImageType(sourceUrl) });
+}
+
+function guessImageType(url) {
+  if (/\.svg(\?|#|$)/i.test(url)) return 'image/svg+xml';
+  if (/\.ico(\?|#|$)/i.test(url)) return 'image/x-icon';
+  if (/\.jpe?g(\?|#|$)/i.test(url)) return 'image/jpeg';
+  if (/\.webp(\?|#|$)/i.test(url)) return 'image/webp';
+  return 'image/png';
+}
+
+function dataUrlToBlob(dataUrl) {
+  const match = /^data:([^;,]+)?(;base64)?,(.*)$/i.exec(dataUrl);
+  if (!match) throw new Error('Invalid data URL');
+
+  const type = match[1] || 'image/png';
+  const encoded = match[3] || '';
+  const binary = match[2] ? atob(encoded) : decodeURIComponent(encoded);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return new Blob([bytes], { type });
+}
+
+function setActiveIconUrl(id, blob) {
+  revokeActiveIconUrl(id);
+  activeIconUrls.set(id, URL.createObjectURL(blob));
+}
+
+function revokeActiveIconUrl(id) {
+  const url = activeIconUrls.get(id);
+  if (url) URL.revokeObjectURL(url);
+  activeIconUrls.delete(id);
+}
+
+async function saveIconRecord(id, blob, sourceUrl) {
+  await withObjectStore(ICON_STORE, 'readwrite', (store, resolve, reject) => {
+    const request = store.put({
+      id,
+      blob,
+      sourceUrl,
+      updatedAt: Date.now(),
+    });
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function getIconRecord(id) {
+  return await withObjectStore(ICON_STORE, 'readonly', (store, resolve, reject) => {
+    const request = store.get(id);
+    request.onsuccess = () => resolve(request.result || null);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function deleteIconRecord(id) {
+  revokeActiveIconUrl(id);
+  await withObjectStore(ICON_STORE, 'readwrite', (store, resolve, reject) => {
+    const request = store.delete(id);
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
   });

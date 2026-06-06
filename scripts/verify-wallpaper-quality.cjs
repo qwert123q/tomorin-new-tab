@@ -33,7 +33,7 @@ function wallpaperSvgBuffer() {
 async function readWallpaperInfo(page) {
   return await page.evaluate(async () => {
     const db = await new Promise((resolve, reject) => {
-      const request = indexedDB.open('tomorin-new-tab', 1);
+      const request = indexedDB.open('tomorin-new-tab');
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     });

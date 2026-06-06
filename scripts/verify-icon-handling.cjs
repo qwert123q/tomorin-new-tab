@@ -15,6 +15,30 @@ function tinyPngBuffer() {
   );
 }
 
+async function readIconRecord(page, id = 'deep-link') {
+  return await page.evaluate(async shortcutId => {
+    const db = await new Promise((resolve, reject) => {
+      const request = indexedDB.open('tomorin-new-tab');
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+
+    const record = await new Promise((resolve, reject) => {
+      const tx = db.transaction('icons', 'readonly');
+      const request = tx.objectStore('icons').get(shortcutId);
+      request.onsuccess = () => resolve(request.result || null);
+      request.onerror = () => reject(request.error);
+    });
+    db.close();
+    return record ? {
+      id: record.id,
+      sourceUrl: record.sourceUrl,
+      type: record.blob.type,
+      size: record.blob.size,
+    } : null;
+  }, id);
+}
+
 (async () => {
   const browser = await chromium.launch({
     headless: true,
@@ -22,9 +46,22 @@ function tinyPngBuffer() {
   });
 
   const page = await browser.newPage({ viewport: { width: 2048, height: 1116 } });
-  await page.goto(pageUrl, { waitUntil: 'domcontentloaded' });
-  await page.evaluate(() => {
-    localStorage.clear();
+  await page.addInitScript(base64 => {
+    window.__TOMORIN_DISABLE_ICON_MIGRATION = true;
+    const bytes = Uint8Array.from(atob(base64), char => char.charCodeAt(0));
+    window.fetch = async input => {
+      const url = typeof input === 'string' ? input : input.url;
+      if (url === 'https://icons.duckduckgo.com/ip3/tiktok.com.ico') {
+        return new Response(bytes, {
+          status: 200,
+          headers: { 'Content-Type': 'image/png' },
+        });
+      }
+      throw new Error(`unexpected icon fetch: ${url}`);
+    };
+
+    if (sessionStorage.getItem('__tomorinSeeded')) return;
+    sessionStorage.setItem('__tomorinSeeded', '1');
     localStorage.setItem('tomorinNewTabState', JSON.stringify({
       shortcuts: [{
         id: 'deep-link',
@@ -39,8 +76,8 @@ function tinyPngBuffer() {
         iconDensity: 'small',
       },
     }));
-  });
-  await page.reload({ waitUntil: 'domcontentloaded' });
+  }, tinyPngBuffer().toString('base64'));
+  await page.goto(pageUrl, { waitUntil: 'domcontentloaded' });
 
   const initialSrc = await page.$eval('.shortcut-icon img', img => img.getAttribute('src'));
   const iconBackground = await page.$eval('.shortcut-icon', icon => getComputedStyle(icon).backgroundColor);
@@ -75,14 +112,19 @@ function tinyPngBuffer() {
   await page.click('button[type="submit"]');
   await page.waitForFunction(() => {
     const img = document.querySelector('.shortcut-icon img');
-    return img && img.getAttribute('src') && img.getAttribute('src').includes('icons.duckduckgo.com');
+    return img && img.getAttribute('src') && img.getAttribute('src').startsWith('blob:');
   });
 
   let stored = await page.evaluate(() => JSON.parse(localStorage.getItem('tomorinNewTabState')));
+  let record = await readIconRecord(page);
+  const selectedIconSrc = await page.$eval('.shortcut-icon img', img => img.getAttribute('src'));
   assert(
     stored.shortcuts[0].iconUrl.includes('icons.duckduckgo.com/ip3/tiktok.com.ico'),
-    'should persist selected remote icon candidate',
+    'should remember the selected remote icon source',
   );
+  assert(stored.shortcuts[0].iconId === 'deep-link', 'should persist selected icon as a local icon id');
+  assert(selectedIconSrc.startsWith('blob:'), `should render selected icon from local blob, got ${selectedIconSrc}`);
+  assert(record?.sourceUrl.includes('icons.duckduckgo.com/ip3/tiktok.com.ico'), 'should cache selected icon blob locally');
 
   await page.click('.shortcut-card');
   await page.setInputFiles('#shortcutIconInput', {
@@ -94,11 +136,14 @@ function tinyPngBuffer() {
 
   await page.waitForFunction(() => {
     const img = document.querySelector('.shortcut-icon img');
-    return img && img.getAttribute('src') && img.getAttribute('src').startsWith('data:image/');
+    return img && img.getAttribute('src') && img.getAttribute('src').startsWith('blob:');
   });
 
   stored = await page.evaluate(() => JSON.parse(localStorage.getItem('tomorinNewTabState')));
-  assert(stored.shortcuts[0].customIcon.startsWith('data:image/'), 'should persist uploaded custom icon');
+  record = await readIconRecord(page);
+  assert(stored.shortcuts[0].iconId === 'deep-link', 'should persist uploaded custom icon as a local icon id');
+  assert(!stored.shortcuts[0].customIcon, 'should not keep uploaded custom icon data in shortcut metadata');
+  assert(record?.sourceUrl === 'custom', 'should replace cached icon with uploaded custom icon');
 
   console.log(JSON.stringify({
     initialSrc,
@@ -108,7 +153,8 @@ function tinyPngBuffer() {
     fallbackSrc,
     candidateCount,
     selectedIconUrl: stored.shortcuts[0].iconUrl,
-    customIconPrefix: stored.shortcuts[0].customIcon.slice(0, 32),
+    selectedIconSrc,
+    customIconSource: record.sourceUrl,
   }, null, 2));
 
   await browser.close();
