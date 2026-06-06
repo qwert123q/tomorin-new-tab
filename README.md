@@ -12,7 +12,8 @@ A lightweight Chrome new tab extension inspired by Infinity New Tab.
 - Adds, edits, deletes, resizes, and reorders shortcuts from the page.
 - Switches global icon density between 小 / 中 / 大.
 - Imports website shortcuts from an Infinity New Tab backup JSON.
-- Uses Chrome's favicon API to show website icons automatically.
+- Uses a high-resolution favicon fallback chain to show website icons automatically.
+- Supports per-shortcut custom icon uploads for sites that cannot be resolved automatically.
 - Stores shortcut data locally with `chrome.storage.local`.
 - Stores uploaded wallpaper images locally in IndexedDB.
 - Does not use an account, server, cloud sync, or wallpaper API.

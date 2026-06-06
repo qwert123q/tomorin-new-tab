@@ -51,6 +51,9 @@ const els = {
   dialogTitle: document.getElementById('dialogTitle'),
   titleInput: document.getElementById('shortcutTitle'),
   urlInput: document.getElementById('shortcutUrl'),
+  iconInput: document.getElementById('shortcutIconInput'),
+  iconPreview: document.getElementById('shortcutIconPreview'),
+  clearIconButton: document.getElementById('clearShortcutIconButton'),
   deleteButton: document.getElementById('deleteShortcutButton'),
   toast: document.getElementById('toast'),
 };
@@ -63,6 +66,7 @@ let activeWallpaperUrl = null;
 let toastTimer = null;
 let touchStartX = 0;
 let movedShortcutId = null;
+let pendingCustomIcon = '';
 
 init();
 
@@ -79,6 +83,11 @@ function bindEvents() {
   els.shortcutForm.addEventListener('submit', handleShortcutSubmit);
   els.wallpaperInput.addEventListener('change', handleWallpaperUpload);
   els.importInput.addEventListener('change', handleInfinityImport);
+  els.iconInput.addEventListener('change', handleShortcutIconUpload);
+  els.urlInput.addEventListener('input', () => {
+    if (!pendingCustomIcon) renderIconPreview();
+  });
+  els.shortcutPage.addEventListener('error', handleShortcutIconError, true);
   document.addEventListener('keydown', handleKeydown);
   els.shortcutPage.addEventListener('dragstart', handleDragStart);
   els.shortcutPage.addEventListener('dragover', handleDragOver);
@@ -109,6 +118,7 @@ function normalizeState(saved) {
       title: String(item.title).slice(0, 80),
       url: normalizeUrl(String(item.url)),
       size: ['small', 'medium', 'large'].includes(item.size) ? item.size : 'small',
+      customIcon: isImageDataUrl(item.customIcon) ? item.customIcon : '',
       order: Number.isFinite(item.order) ? item.order : index,
     }))
     .sort((a, b) => a.order - b.order)
@@ -200,13 +210,15 @@ function renderShortcuts() {
 function renderShortcut(item) {
   const title = escapeHtml(item.title);
   const url = escapeHtml(item.url);
-  const favicon = faviconUrl(item.url, 64);
+  const iconSources = iconSourceList(item);
+  const favicon = iconSources[0];
+  const fallbacks = escapeHtml(JSON.stringify(iconSources.slice(1)));
   const draggable = editMode ? 'true' : 'false';
 
   return `
     <div class="shortcut-card ${item.size}" role="link" tabindex="0" data-id="${item.id}" data-url="${url}" draggable="${draggable}" title="${title}">
       <span class="shortcut-icon">
-        <img src="${favicon}" alt="" loading="lazy">
+        <img src="${favicon}" alt="" loading="lazy" data-fallbacks="${fallbacks}" data-fallback-index="0">
       </span>
       <span class="shortcut-title">${title}</span>
       <button class="edit-chip" type="button" data-action="edit-shortcut" data-id="${item.id}" title="编辑 ${title}">✎</button>
@@ -227,15 +239,48 @@ function renderDots() {
   }).join('');
 }
 
-function faviconUrl(url, size) {
+function iconSourceList(item) {
+  const sources = [];
+  if (isImageDataUrl(item.customIcon)) sources.push(item.customIcon);
+  sources.push(highResolutionFaviconUrl(item.url));
+  if (hasChromeRuntime) sources.push(chromeFaviconUrl(item.url, 128));
+  sources.push(duckDuckGoFaviconUrl(item.url));
+  sources.push(placeholderIcon(item.title));
+  return [...new Set(sources.filter(Boolean))];
+}
+
+function highResolutionFaviconUrl(url) {
+  const favicon = new URL('https://www.google.com/s2/favicons');
+  favicon.searchParams.set('domain_url', siteOrigin(url));
+  favicon.searchParams.set('sz', '128');
+  return favicon.toString();
+}
+
+function chromeFaviconUrl(url, size) {
   if (!hasChromeRuntime) {
-    return `https://www.google.com/s2/favicons?domain_url=${encodeURIComponent(normalizeUrl(url))}&sz=${size}`;
+    return '';
   }
 
   const favicon = new URL(chrome.runtime.getURL('/_favicon/'));
-  favicon.searchParams.set('pageUrl', normalizeUrl(url));
+  favicon.searchParams.set('pageUrl', siteOrigin(url));
   favicon.searchParams.set('size', String(size));
   return favicon.toString();
+}
+
+function duckDuckGoFaviconUrl(url) {
+  const host = hostnameFromUrl(url);
+  return host ? `https://icons.duckduckgo.com/ip3/${encodeURIComponent(host)}.ico` : '';
+}
+
+function placeholderIcon(title) {
+  const letter = cleanShortcutTitle(title).charAt(0).toUpperCase() || '?';
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+      <rect width="128" height="128" rx="32" fill="#eef2f6"/>
+      <text x="64" y="78" text-anchor="middle" font-family="Arial, sans-serif" font-size="56" font-weight="700" fill="#475467">${escapeSvg(letter)}</text>
+    </svg>
+  `.trim();
+  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
 }
 
 async function handleSearch(event) {
@@ -272,6 +317,15 @@ function normalizeUrl(value) {
   if (/^https?:\/\//i.test(trimmed)) return trimmed;
   if (/^localhost(:\d+)?(\/|$)/i.test(trimmed)) return `http://${trimmed}`;
   return `https://${trimmed}`;
+}
+
+function siteOrigin(url) {
+  try {
+    const parsed = new URL(normalizeUrl(url));
+    return `${parsed.origin}/`;
+  } catch {
+    return normalizeUrl(url);
+  }
 }
 
 async function handleDocumentClick(event) {
@@ -320,6 +374,12 @@ async function handleDocumentClick(event) {
     return;
   }
 
+  if (action === 'clear-shortcut-icon') {
+    pendingCustomIcon = '';
+    renderIconPreview();
+    return;
+  }
+
   if (action === 'go-page') {
     await goToPage(Number(actionTarget.dataset.page));
     return;
@@ -355,6 +415,9 @@ function openShortcutDialog(id = null) {
   els.urlInput.value = item?.url || '';
   const size = item?.size || 'small';
   els.shortcutForm.elements.shortcutSize.value = size;
+  pendingCustomIcon = item?.customIcon || '';
+  els.iconInput.value = '';
+  renderIconPreview();
   els.deleteButton.hidden = !item;
   els.dialog.showModal();
   requestAnimationFrame(() => els.titleInput.focus());
@@ -362,6 +425,8 @@ function openShortcutDialog(id = null) {
 
 function closeShortcutDialog() {
   editingId = null;
+  pendingCustomIcon = '';
+  els.iconInput.value = '';
   els.dialog.close();
 }
 
@@ -375,17 +440,18 @@ async function handleShortcutSubmit(event) {
 
   if (editingId) {
     state.shortcuts = state.shortcuts.map(item => (
-      item.id === editingId ? { ...item, title, url, size } : item
+      item.id === editingId ? normalizeShortcutForSave({ ...item, title, url, size, customIcon: pendingCustomIcon }) : item
     ));
     showToast('已更新');
   } else {
-    state.shortcuts.push({
+    state.shortcuts.push(normalizeShortcutForSave({
       id: crypto.randomUUID(),
       title,
       url,
       size,
+      customIcon: pendingCustomIcon,
       order: state.shortcuts.length,
-    });
+    }));
     state.settings.currentPage = pageCount() - 1;
     showToast('已添加');
   }
@@ -393,6 +459,93 @@ async function handleShortcutSubmit(event) {
   await saveState();
   closeShortcutDialog();
   render();
+}
+
+function normalizeShortcutForSave(item) {
+  const next = { ...item };
+  if (!isImageDataUrl(next.customIcon)) delete next.customIcon;
+  return next;
+}
+
+async function handleShortcutIconUpload(event) {
+  const file = event.target.files?.[0];
+  event.target.value = '';
+  if (!file) return;
+  if (!file.type.startsWith('image/')) {
+    showToast('请选择图片文件');
+    return;
+  }
+
+  try {
+    pendingCustomIcon = await imageFileToIconDataUrl(file, 256);
+    renderIconPreview();
+    showToast('图标已选择');
+  } catch {
+    showToast('图标处理失败');
+  }
+}
+
+function renderIconPreview() {
+  if (pendingCustomIcon) {
+    els.iconPreview.innerHTML = `<img src="${escapeHtml(pendingCustomIcon)}" alt="">`;
+    els.clearIconButton.hidden = false;
+    return;
+  }
+
+  const url = els.urlInput.value ? normalizeUrl(els.urlInput.value) : 'https://example.com';
+  els.iconPreview.innerHTML = `<img src="${escapeHtml(highResolutionFaviconUrl(url))}" alt="">`;
+  els.clearIconButton.hidden = true;
+}
+
+function handleShortcutIconError(event) {
+  const img = event.target;
+  if (!(img instanceof HTMLImageElement) || !img.closest('.shortcut-icon')) return;
+
+  const fallbacks = parseIconFallbacks(img.dataset.fallbacks);
+  const index = Number.parseInt(img.dataset.fallbackIndex || '0', 10);
+  const next = fallbacks[index];
+  if (!next) return;
+
+  img.dataset.fallbackIndex = String(index + 1);
+  img.src = next;
+}
+
+function parseIconFallbacks(value) {
+  try {
+    const parsed = JSON.parse(value || '[]');
+    return Array.isArray(parsed) ? parsed.filter(item => typeof item === 'string' && item) : [];
+  } catch {
+    return [];
+  }
+}
+
+function imageFileToIconDataUrl(file, canvasSize) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = canvasSize;
+      canvas.height = canvasSize;
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, canvasSize, canvasSize);
+
+      const scale = Math.min(canvasSize / img.width, canvasSize / img.height);
+      const width = Math.max(1, Math.round(img.width * scale));
+      const height = Math.max(1, Math.round(img.height * scale));
+      const x = Math.round((canvasSize - width) / 2);
+      const y = Math.round((canvasSize - height) / 2);
+      ctx.drawImage(img, x, y, width, height);
+
+      URL.revokeObjectURL(url);
+      resolve(canvas.toDataURL('image/png'));
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error('Unable to load icon'));
+    };
+    img.src = url;
+  });
 }
 
 async function deleteEditingShortcut() {
@@ -668,6 +821,18 @@ function shortcutUrlKey(url) {
   } catch {
     return '';
   }
+}
+
+function isImageDataUrl(value) {
+  return typeof value === 'string' && /^data:image\/[a-z0-9.+-]+;base64,/i.test(value);
+}
+
+function escapeSvg(value) {
+  return String(value).replace(/[&<>]/g, char => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+  }[char]));
 }
 
 function compressImage(file, maxSide, quality) {

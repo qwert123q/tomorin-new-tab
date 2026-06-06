@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Tomorin New Tab</title>
-  <link rel="stylesheet" href="style.css?v=0.1.6">
+  <link rel="stylesheet" href="style.css?v=0.1.7">
 </head>
 <body>
   <main class="newtab-shell">
@@ -87,6 +87,18 @@
         <label><input type="radio" name="shortcutSize" value="large"> 大</label>
       </fieldset>
 
+      <div class="field">
+        <span>图标</span>
+        <div class="icon-picker">
+          <span class="icon-preview" id="shortcutIconPreview"></span>
+          <label class="text-button upload-icon-button">
+            上传
+            <input id="shortcutIconInput" type="file" accept="image/*">
+          </label>
+          <button class="text-button" id="clearShortcutIconButton" type="button" data-action="clear-shortcut-icon">清除</button>
+        </div>
+      </div>
+
       <div class="dialog-actions">
         <button class="text-button danger" id="deleteShortcutButton" type="button" data-action="delete-shortcut" hidden>删除</button>
         <span class="dialog-spacer"></span>
@@ -98,6 +110,6 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-  <script src="app.js?v=0.1.6"></script>
+  <script src="app.js?v=0.1.7"></script>
 </body>
 </html>

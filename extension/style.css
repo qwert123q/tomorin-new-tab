@@ -209,6 +209,7 @@ button {
   width: 29px;
   height: 29px;
   object-fit: contain;
+  image-rendering: auto;
 }
 
 .shortcut-title {
@@ -557,6 +558,43 @@ button {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+}
+
+.icon-picker {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.icon-preview {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border: 1px solid #d7dde5;
+  border-radius: 13px;
+  color: #667085;
+  background: #f8fafc;
+  overflow: hidden;
+}
+
+.icon-preview img {
+  width: 30px;
+  height: 30px;
+  object-fit: contain;
+}
+
+.upload-icon-button {
+  display: inline-grid;
+  place-items: center;
+}
+
+.upload-icon-button input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .dialog-actions {
