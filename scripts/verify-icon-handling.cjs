@@ -48,12 +48,19 @@ function tinyPngBuffer() {
     iconBackground === 'rgba(0, 0, 0, 0)',
     `shortcut icon container should be transparent, got ${iconBackground}`,
   );
-  assert(initialSrc.includes('google.com/s2/favicons'), 'should prefer high-resolution Google favicon service');
-  assert(initialSrc.includes('sz=128'), 'should request 128px favicon');
+  assert(initialSrc === 'https://www.tiktok.com/apple-touch-icon.png', `should try high-resolution touch icon first, got ${initialSrc}`);
+
+  await page.$eval('.shortcut-icon img', img => img.dispatchEvent(new Event('error')));
+  const secondSrc = await page.$eval('.shortcut-icon img', img => img.getAttribute('src'));
   assert(
-    decodeURIComponent(initialSrc).includes('domain_url=https://www.tiktok.com/'),
-    `should request favicon by site origin, got ${initialSrc}`,
+    secondSrc === 'https://www.tiktok.com/favicon-32x32.png',
+    `should fallback to 32px favicon before remote services, got ${secondSrc}`,
   );
+
+  await page.$eval('.shortcut-icon img', img => img.dispatchEvent(new Event('error')));
+  const googleSrc = await page.$eval('.shortcut-icon img', img => img.getAttribute('src'));
+  assert(googleSrc.includes('google.com/s2/favicons'), 'should fallback to Google favicon service');
+  assert(googleSrc.includes('sz=128'), 'should request 128px Google favicon');
 
   await page.$eval('.shortcut-icon img', img => img.dispatchEvent(new Event('error')));
   const fallbackSrc = await page.$eval('.shortcut-icon img', img => img.getAttribute('src'));
@@ -96,6 +103,8 @@ function tinyPngBuffer() {
   console.log(JSON.stringify({
     initialSrc,
     iconBackground,
+    secondSrc,
+    googleSrc,
     fallbackSrc,
     candidateCount,
     selectedIconUrl: stored.shortcuts[0].iconUrl,

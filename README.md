@@ -15,6 +15,7 @@ A lightweight Chrome new tab extension inspired by Infinity New Tab.
 - Uses a high-resolution favicon fallback chain to show website icons automatically.
 - Shows selectable icon candidates while editing a shortcut.
 - Supports per-shortcut custom icon uploads for sites that cannot be resolved automatically.
+- Keeps uploaded wallpapers sharp by avoiding display blur and preserving near-4K resolution.
 - Stores shortcut data locally with `chrome.storage.local`.
 - Stores uploaded wallpaper images locally in IndexedDB.
 - Does not use an account, server, cloud sync, or wallpaper API.

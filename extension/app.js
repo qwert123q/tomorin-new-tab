@@ -252,27 +252,32 @@ function renderDots() {
 
 function iconSourceList(item) {
   const sources = [];
+  const direct = directFaviconUrls(item.url);
   if (isImageDataUrl(item.customIcon)) sources.push(item.customIcon);
   if (isHttpUrl(item.iconUrl)) sources.push(item.iconUrl);
+  sources.push(direct.appleTouch);
+  sources.push(direct.png32);
   sources.push(highResolutionFaviconUrl(item.url));
   if (hasChromeRuntime) sources.push(chromeFaviconUrl(item.url, 128));
   sources.push(duckDuckGoFaviconUrl(item.url));
-  sources.push(...directFaviconUrls(item.url));
+  sources.push(direct.ico);
   sources.push(placeholderIcon(item.title));
   return [...new Set(sources.filter(Boolean))];
 }
 
 function iconCandidatesForUrl(url, title = '') {
+  const direct = directFaviconUrls(url);
   const candidates = [
+    { kind: 'apple-touch', url: direct.appleTouch },
+    { kind: 'png32', url: direct.png32 },
     { kind: 'google', url: highResolutionFaviconUrl(url) },
     { kind: 'duckduckgo', url: duckDuckGoFaviconUrl(url) },
-    { kind: 'favicon', url: directFaviconUrls(url)[0] },
-    { kind: 'apple-touch', url: directFaviconUrls(url)[1] },
+    { kind: 'favicon', url: direct.ico },
     { kind: 'fallback', url: placeholderIcon(title || hostnameFromUrl(url)) },
   ];
 
   if (hasChromeRuntime) {
-    candidates.splice(2, 0, { kind: 'chrome', url: chromeFaviconUrl(url, 128) });
+    candidates.splice(3, 0, { kind: 'chrome', url: chromeFaviconUrl(url, 128) });
   }
 
   const seen = new Set();
@@ -308,11 +313,11 @@ function duckDuckGoFaviconUrl(url) {
 
 function directFaviconUrls(url) {
   const origin = siteOrigin(url);
-  return [
-    new URL('/favicon.ico', origin).toString(),
-    new URL('/apple-touch-icon.png', origin).toString(),
-    new URL('/favicon-32x32.png', origin).toString(),
-  ];
+  return {
+    ico: new URL('/favicon.ico', origin).toString(),
+    appleTouch: new URL('/apple-touch-icon.png', origin).toString(),
+    png32: new URL('/favicon-32x32.png', origin).toString(),
+  };
 }
 
 function placeholderIcon(title) {
@@ -741,7 +746,7 @@ async function handleWallpaperUpload(event) {
 
   try {
     showToast('正在处理壁纸');
-    const blob = await compressImage(file, 2560, 0.86);
+    const blob = await compressImage(file, 4096, 0.94);
     await saveWallpaperBlob(blob);
     state.settings.wallpaper = { type: 'uploaded' };
     await saveState();
