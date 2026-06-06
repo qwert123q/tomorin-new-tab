@@ -43,6 +43,11 @@ function tinyPngBuffer() {
   await page.reload({ waitUntil: 'domcontentloaded' });
 
   const initialSrc = await page.$eval('.shortcut-icon img', img => img.getAttribute('src'));
+  const iconBackground = await page.$eval('.shortcut-icon', icon => getComputedStyle(icon).backgroundColor);
+  assert(
+    iconBackground === 'rgba(0, 0, 0, 0)',
+    `shortcut icon container should be transparent, got ${iconBackground}`,
+  );
   assert(initialSrc.includes('google.com/s2/favicons'), 'should prefer high-resolution Google favicon service');
   assert(initialSrc.includes('sz=128'), 'should request 128px favicon');
   assert(
@@ -90,6 +95,7 @@ function tinyPngBuffer() {
 
   console.log(JSON.stringify({
     initialSrc,
+    iconBackground,
     fallbackSrc,
     candidateCount,
     selectedIconUrl: stored.shortcuts[0].iconUrl,

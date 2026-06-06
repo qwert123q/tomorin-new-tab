@@ -186,7 +186,7 @@ button {
   width: 42px;
   height: 42px;
   border-radius: 13px;
-  background: rgba(255, 255, 255, 0.9);
+  background: transparent;
   box-shadow: var(--soft-shadow);
   overflow: hidden;
   transition: transform 160ms ease, box-shadow 160ms ease;
