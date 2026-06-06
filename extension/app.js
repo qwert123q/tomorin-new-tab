@@ -53,6 +53,7 @@ const els = {
   urlInput: document.getElementById('shortcutUrl'),
   iconInput: document.getElementById('shortcutIconInput'),
   iconPreview: document.getElementById('shortcutIconPreview'),
+  iconCandidates: document.getElementById('shortcutIconCandidates'),
   clearIconButton: document.getElementById('clearShortcutIconButton'),
   deleteButton: document.getElementById('deleteShortcutButton'),
   toast: document.getElementById('toast'),
@@ -67,6 +68,7 @@ let toastTimer = null;
 let touchStartX = 0;
 let movedShortcutId = null;
 let pendingCustomIcon = '';
+let pendingIconUrl = '';
 
 init();
 
@@ -85,7 +87,15 @@ function bindEvents() {
   els.importInput.addEventListener('change', handleInfinityImport);
   els.iconInput.addEventListener('change', handleShortcutIconUpload);
   els.urlInput.addEventListener('input', () => {
-    if (!pendingCustomIcon) renderIconPreview();
+    if (!pendingCustomIcon) {
+      pendingIconUrl = '';
+      renderIconPreview();
+    }
+  });
+  els.titleInput.addEventListener('input', () => {
+    if (!pendingCustomIcon) {
+      renderIconPreview();
+    }
   });
   els.shortcutPage.addEventListener('error', handleShortcutIconError, true);
   document.addEventListener('keydown', handleKeydown);
@@ -119,6 +129,7 @@ function normalizeState(saved) {
       url: normalizeUrl(String(item.url)),
       size: ['small', 'medium', 'large'].includes(item.size) ? item.size : 'small',
       customIcon: isImageDataUrl(item.customIcon) ? item.customIcon : '',
+      iconUrl: isHttpUrl(item.iconUrl) ? item.iconUrl : '',
       order: Number.isFinite(item.order) ? item.order : index,
     }))
     .sort((a, b) => a.order - b.order)
@@ -242,11 +253,34 @@ function renderDots() {
 function iconSourceList(item) {
   const sources = [];
   if (isImageDataUrl(item.customIcon)) sources.push(item.customIcon);
+  if (isHttpUrl(item.iconUrl)) sources.push(item.iconUrl);
   sources.push(highResolutionFaviconUrl(item.url));
   if (hasChromeRuntime) sources.push(chromeFaviconUrl(item.url, 128));
   sources.push(duckDuckGoFaviconUrl(item.url));
+  sources.push(...directFaviconUrls(item.url));
   sources.push(placeholderIcon(item.title));
   return [...new Set(sources.filter(Boolean))];
+}
+
+function iconCandidatesForUrl(url, title = '') {
+  const candidates = [
+    { kind: 'google', url: highResolutionFaviconUrl(url) },
+    { kind: 'duckduckgo', url: duckDuckGoFaviconUrl(url) },
+    { kind: 'favicon', url: directFaviconUrls(url)[0] },
+    { kind: 'apple-touch', url: directFaviconUrls(url)[1] },
+    { kind: 'fallback', url: placeholderIcon(title || hostnameFromUrl(url)) },
+  ];
+
+  if (hasChromeRuntime) {
+    candidates.splice(2, 0, { kind: 'chrome', url: chromeFaviconUrl(url, 128) });
+  }
+
+  const seen = new Set();
+  return candidates.filter(candidate => {
+    if (!candidate.url || seen.has(candidate.url)) return false;
+    seen.add(candidate.url);
+    return true;
+  });
 }
 
 function highResolutionFaviconUrl(url) {
@@ -270,6 +304,15 @@ function chromeFaviconUrl(url, size) {
 function duckDuckGoFaviconUrl(url) {
   const host = hostnameFromUrl(url);
   return host ? `https://icons.duckduckgo.com/ip3/${encodeURIComponent(host)}.ico` : '';
+}
+
+function directFaviconUrls(url) {
+  const origin = siteOrigin(url);
+  return [
+    new URL('/favicon.ico', origin).toString(),
+    new URL('/apple-touch-icon.png', origin).toString(),
+    new URL('/favicon-32x32.png', origin).toString(),
+  ];
 }
 
 function placeholderIcon(title) {
@@ -376,6 +419,15 @@ async function handleDocumentClick(event) {
 
   if (action === 'clear-shortcut-icon') {
     pendingCustomIcon = '';
+    pendingIconUrl = '';
+    renderIconPreview();
+    return;
+  }
+
+  if (action === 'select-icon') {
+    const selectedIcon = actionTarget.dataset.iconUrl || '';
+    pendingCustomIcon = isImageDataUrl(selectedIcon) ? selectedIcon : '';
+    pendingIconUrl = pendingCustomIcon ? '' : selectedIcon;
     renderIconPreview();
     return;
   }
@@ -416,6 +468,7 @@ function openShortcutDialog(id = null) {
   const size = item?.size || 'small';
   els.shortcutForm.elements.shortcutSize.value = size;
   pendingCustomIcon = item?.customIcon || '';
+  pendingIconUrl = item?.iconUrl || '';
   els.iconInput.value = '';
   renderIconPreview();
   els.deleteButton.hidden = !item;
@@ -426,6 +479,7 @@ function openShortcutDialog(id = null) {
 function closeShortcutDialog() {
   editingId = null;
   pendingCustomIcon = '';
+  pendingIconUrl = '';
   els.iconInput.value = '';
   els.dialog.close();
 }
@@ -440,7 +494,14 @@ async function handleShortcutSubmit(event) {
 
   if (editingId) {
     state.shortcuts = state.shortcuts.map(item => (
-      item.id === editingId ? normalizeShortcutForSave({ ...item, title, url, size, customIcon: pendingCustomIcon }) : item
+      item.id === editingId ? normalizeShortcutForSave({
+        ...item,
+        title,
+        url,
+        size,
+        customIcon: pendingCustomIcon,
+        iconUrl: pendingIconUrl,
+      }) : item
     ));
     showToast('已更新');
   } else {
@@ -450,6 +511,7 @@ async function handleShortcutSubmit(event) {
       url,
       size,
       customIcon: pendingCustomIcon,
+      iconUrl: pendingIconUrl,
       order: state.shortcuts.length,
     }));
     state.settings.currentPage = pageCount() - 1;
@@ -464,6 +526,8 @@ async function handleShortcutSubmit(event) {
 function normalizeShortcutForSave(item) {
   const next = { ...item };
   if (!isImageDataUrl(next.customIcon)) delete next.customIcon;
+  if (!isHttpUrl(next.iconUrl)) delete next.iconUrl;
+  if (next.customIcon) delete next.iconUrl;
   return next;
 }
 
@@ -478,6 +542,7 @@ async function handleShortcutIconUpload(event) {
 
   try {
     pendingCustomIcon = await imageFileToIconDataUrl(file, 256);
+    pendingIconUrl = '';
     renderIconPreview();
     showToast('图标已选择');
   } catch {
@@ -486,15 +551,31 @@ async function handleShortcutIconUpload(event) {
 }
 
 function renderIconPreview() {
+  const url = els.urlInput.value ? normalizeUrl(els.urlInput.value) : 'https://example.com';
+  renderIconCandidates(url);
+
   if (pendingCustomIcon) {
     els.iconPreview.innerHTML = `<img src="${escapeHtml(pendingCustomIcon)}" alt="">`;
     els.clearIconButton.hidden = false;
     return;
   }
 
-  const url = els.urlInput.value ? normalizeUrl(els.urlInput.value) : 'https://example.com';
-  els.iconPreview.innerHTML = `<img src="${escapeHtml(highResolutionFaviconUrl(url))}" alt="">`;
-  els.clearIconButton.hidden = true;
+  const previewUrl = pendingIconUrl || highResolutionFaviconUrl(url);
+  els.iconPreview.innerHTML = `<img src="${escapeHtml(previewUrl)}" alt="">`;
+  els.clearIconButton.hidden = !pendingIconUrl;
+}
+
+function renderIconCandidates(url) {
+  const title = els.titleInput.value || hostnameFromUrl(url);
+  const candidates = iconCandidatesForUrl(url, title);
+  els.iconCandidates.innerHTML = candidates.map(candidate => {
+    const selected = !pendingCustomIcon && pendingIconUrl === candidate.url;
+    return `
+      <button class="icon-candidate" type="button" data-action="select-icon" data-icon-kind="${candidate.kind}" data-icon-url="${escapeHtml(candidate.url)}" aria-pressed="${selected}" title="${candidate.kind}">
+        <img src="${escapeHtml(candidate.url)}" alt="" loading="lazy">
+      </button>
+    `;
+  }).join('');
 }
 
 function handleShortcutIconError(event) {
@@ -824,7 +905,18 @@ function shortcutUrlKey(url) {
 }
 
 function isImageDataUrl(value) {
-  return typeof value === 'string' && /^data:image\/[a-z0-9.+-]+;base64,/i.test(value);
+  return typeof value === 'string'
+    && (/^data:image\/[a-z0-9.+-]+;base64,/i.test(value) || /^data:image\/svg\+xml,/i.test(value));
+}
+
+function isHttpUrl(value) {
+  if (typeof value !== 'string') return false;
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
 }
 
 function escapeSvg(value) {

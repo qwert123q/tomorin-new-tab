@@ -13,6 +13,7 @@ A lightweight Chrome new tab extension inspired by Infinity New Tab.
 - Switches global icon density between 小 / 中 / 大.
 - Imports website shortcuts from an Infinity New Tab backup JSON.
 - Uses a high-resolution favicon fallback chain to show website icons automatically.
+- Shows selectable icon candidates while editing a shortcut.
 - Supports per-shortcut custom icon uploads for sites that cannot be resolved automatically.
 - Stores shortcut data locally with `chrome.storage.local`.
 - Stores uploaded wallpaper images locally in IndexedDB.

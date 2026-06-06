@@ -56,6 +56,23 @@ function tinyPngBuffer() {
 
   await page.click('[data-action="toggle-edit"]');
   await page.click('.shortcut-card');
+  const candidateCount = await page.$$eval('[data-action="select-icon"]', buttons => buttons.length);
+  assert(candidateCount >= 4, `should render icon candidates, got ${candidateCount}`);
+
+  await page.click('[data-icon-kind="duckduckgo"]');
+  await page.click('button[type="submit"]');
+  await page.waitForFunction(() => {
+    const img = document.querySelector('.shortcut-icon img');
+    return img && img.getAttribute('src') && img.getAttribute('src').includes('icons.duckduckgo.com');
+  });
+
+  let stored = await page.evaluate(() => JSON.parse(localStorage.getItem('tomorinNewTabState')));
+  assert(
+    stored.shortcuts[0].iconUrl.includes('icons.duckduckgo.com/ip3/tiktok.com.ico'),
+    'should persist selected remote icon candidate',
+  );
+
+  await page.click('.shortcut-card');
   await page.setInputFiles('#shortcutIconInput', {
     name: 'custom-icon.png',
     mimeType: 'image/png',
@@ -68,12 +85,14 @@ function tinyPngBuffer() {
     return img && img.getAttribute('src') && img.getAttribute('src').startsWith('data:image/');
   });
 
-  const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('tomorinNewTabState')));
+  stored = await page.evaluate(() => JSON.parse(localStorage.getItem('tomorinNewTabState')));
   assert(stored.shortcuts[0].customIcon.startsWith('data:image/'), 'should persist uploaded custom icon');
 
   console.log(JSON.stringify({
     initialSrc,
     fallbackSrc,
+    candidateCount,
+    selectedIconUrl: stored.shortcuts[0].iconUrl,
     customIconPrefix: stored.shortcuts[0].customIcon.slice(0, 32),
   }, null, 2));
 
