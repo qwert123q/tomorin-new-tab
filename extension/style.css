@@ -402,13 +402,25 @@ button {
   height: 42px;
 }
 
-.settings-trigger {
+.icon-button.settings-trigger {
   position: absolute;
   right: 0;
   bottom: 0;
   z-index: 2;
-  font-size: 24px;
+  border: 0;
+  color: rgba(255, 255, 255, 0.92);
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  font-size: 28px;
   line-height: 1;
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.36);
+}
+
+.icon-button.settings-trigger:hover,
+.icon-button.settings-trigger:focus-visible {
+  background: transparent;
+  box-shadow: none;
 }
 
 .settings-panel {

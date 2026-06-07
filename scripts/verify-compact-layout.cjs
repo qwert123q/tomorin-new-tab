@@ -78,6 +78,10 @@ function shortcut(index) {
       gridColumns: pageStyle.gridTemplateColumns.split(' ').length,
       settingsMenuWidth: settingsMenu.width,
       settingsTriggerFontSize: settingsTriggerStyle.fontSize,
+      settingsTriggerBorderWidth: settingsTriggerStyle.borderTopWidth,
+      settingsTriggerBackground: settingsTriggerStyle.backgroundColor,
+      settingsTriggerShadow: settingsTriggerStyle.boxShadow,
+      settingsTriggerBackdropFilter: settingsTriggerStyle.backdropFilter,
       settingsPanelOpacity: settingsPanelStyle.opacity,
       settingsPanelPointerEvents: settingsPanelStyle.pointerEvents,
     };
@@ -91,6 +95,10 @@ function shortcut(index) {
   assert(metrics.fortiethBottom < 640, `40th shortcut should stay comfortably in the first viewport, got ${metrics.fortiethBottom}`);
   assert(metrics.settingsMenuWidth <= 64, `collapsed settings should only show a small gear, got width ${metrics.settingsMenuWidth}`);
   assert(parseFloat(metrics.settingsTriggerFontSize) >= 22, `settings gear should fill the round button, got font size ${metrics.settingsTriggerFontSize}`);
+  assert(metrics.settingsTriggerBorderWidth === '0px', `settings gear should not have a circular border, got ${metrics.settingsTriggerBorderWidth}`);
+  assert(metrics.settingsTriggerBackground === 'rgba(0, 0, 0, 0)', `settings gear should be transparent, got ${metrics.settingsTriggerBackground}`);
+  assert(metrics.settingsTriggerShadow === 'none', `settings gear should not have a circular shadow, got ${metrics.settingsTriggerShadow}`);
+  assert(metrics.settingsTriggerBackdropFilter === 'none', `settings gear should not blur through a circular backdrop, got ${metrics.settingsTriggerBackdropFilter}`);
   assert(metrics.settingsPanelOpacity === '0', `settings panel should be hidden until hover/focus, got opacity ${metrics.settingsPanelOpacity}`);
   assert(metrics.settingsPanelPointerEvents === 'none', `hidden settings panel should not catch pointer events`);
 
