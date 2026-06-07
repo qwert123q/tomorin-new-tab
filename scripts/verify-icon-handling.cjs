@@ -86,10 +86,12 @@ async function readIconRecord(page, id = 'deep-link') {
 
   const initialSrc = await page.$eval('.shortcut-icon img', img => img.getAttribute('src'));
   const iconBackground = await page.$eval('.shortcut-icon', icon => getComputedStyle(icon).backgroundColor);
+  const iconShadow = await page.$eval('.shortcut-icon', icon => getComputedStyle(icon).boxShadow);
   assert(
     iconBackground === 'rgba(0, 0, 0, 0)',
     `shortcut icon container should be transparent, got ${iconBackground}`,
   );
+  assert(iconShadow === 'none', `transparent shortcut icon container should not show a frame shadow, got ${iconShadow}`);
   assert(initialSrc === 'https://www.tiktok.com/apple-touch-icon.png', `should try high-resolution touch icon first, got ${initialSrc}`);
 
   await page.$eval('.shortcut-icon img', img => img.dispatchEvent(new Event('error')));
@@ -154,6 +156,7 @@ async function readIconRecord(page, id = 'deep-link') {
   console.log(JSON.stringify({
     initialSrc,
     iconBackground,
+    iconShadow,
     secondSrc,
     googleSrc,
     fallbackSrc,

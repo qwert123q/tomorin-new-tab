@@ -65,6 +65,7 @@ function shortcut(index) {
     const fortieth = document.querySelector('.shortcut-card:nth-child(40)').getBoundingClientRect();
     const pageStyle = getComputedStyle(document.querySelector('.shortcut-page'));
     const settingsMenu = document.querySelector('.settings-menu').getBoundingClientRect();
+    const settingsTriggerStyle = getComputedStyle(document.querySelector('.settings-trigger'));
     const settingsPanelStyle = getComputedStyle(document.querySelector('.settings-panel'));
     return {
       searchTop: searchBox.top,
@@ -76,6 +77,7 @@ function shortcut(index) {
       columnGap: pageStyle.columnGap,
       gridColumns: pageStyle.gridTemplateColumns.split(' ').length,
       settingsMenuWidth: settingsMenu.width,
+      settingsTriggerFontSize: settingsTriggerStyle.fontSize,
       settingsPanelOpacity: settingsPanelStyle.opacity,
       settingsPanelPointerEvents: settingsPanelStyle.pointerEvents,
     };
@@ -88,6 +90,7 @@ function shortcut(index) {
   assert(metrics.secondRowLeftDelta <= 1, `new rows should start at the left edge, got delta ${metrics.secondRowLeftDelta}`);
   assert(metrics.fortiethBottom < 640, `40th shortcut should stay comfortably in the first viewport, got ${metrics.fortiethBottom}`);
   assert(metrics.settingsMenuWidth <= 64, `collapsed settings should only show a small gear, got width ${metrics.settingsMenuWidth}`);
+  assert(parseFloat(metrics.settingsTriggerFontSize) >= 22, `settings gear should fill the round button, got font size ${metrics.settingsTriggerFontSize}`);
   assert(metrics.settingsPanelOpacity === '0', `settings panel should be hidden until hover/focus, got opacity ${metrics.settingsPanelOpacity}`);
   assert(metrics.settingsPanelPointerEvents === 'none', `hidden settings panel should not catch pointer events`);
 
