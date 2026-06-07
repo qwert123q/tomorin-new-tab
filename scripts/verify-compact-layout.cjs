@@ -30,7 +30,7 @@ function shortcut(index) {
     if (sessionStorage.getItem('__tomorinSeeded')) return;
     sessionStorage.setItem('__tomorinSeeded', '1');
     localStorage.setItem('tomorinNewTabState', JSON.stringify({
-      shortcuts: Array.from({ length: 30 }, (_, index) => ({
+      shortcuts: Array.from({ length: 40 }, (_, index) => ({
         id: `site-${index}`,
         title: `Site ${index}`,
         url: `https://site-${index}.example.com`,
@@ -51,7 +51,7 @@ function shortcut(index) {
   assert(tabCount === 0, `search category words should be removed, got ${tabCount}`);
 
   const cardCount = await page.$$eval('.shortcut-card', cards => cards.length);
-  assert(cardCount === 30, `first page should hold all 30 shortcuts, got ${cardCount}`);
+  assert(cardCount === 40, `first page should hold all 40 shortcuts, got ${cardCount}`);
 
   const dotCount = await page.$$eval('.page-dot', dots => dots.length);
   assert(dotCount === 0, `pagination should disappear when 30 shortcuts fit on one page, got ${dotCount}`);
@@ -61,19 +61,41 @@ function shortcut(index) {
     const content = document.querySelector('.content').getBoundingClientRect();
     const first = document.querySelector('.shortcut-card:nth-child(1)').getBoundingClientRect();
     const second = document.querySelector('.shortcut-card:nth-child(2)').getBoundingClientRect();
+    const ninth = document.querySelector('.shortcut-card:nth-child(9)').getBoundingClientRect();
+    const fortieth = document.querySelector('.shortcut-card:nth-child(40)').getBoundingClientRect();
     const pageStyle = getComputedStyle(document.querySelector('.shortcut-page'));
+    const settingsMenu = document.querySelector('.settings-menu').getBoundingClientRect();
+    const settingsPanelStyle = getComputedStyle(document.querySelector('.settings-panel'));
     return {
       searchTop: searchBox.top,
       searchHeight: searchBox.height,
       contentTop: content.top,
       horizontalPitch: second.left - first.left,
+      secondRowLeftDelta: Math.abs(ninth.left - first.left),
+      fortiethBottom: fortieth.bottom,
       columnGap: pageStyle.columnGap,
+      gridColumns: pageStyle.gridTemplateColumns.split(' ').length,
+      settingsMenuWidth: settingsMenu.width,
+      settingsPanelOpacity: settingsPanelStyle.opacity,
+      settingsPanelPointerEvents: settingsPanelStyle.pointerEvents,
     };
   });
 
   assert(metrics.searchTop < 96, `search should move upward, got top ${metrics.searchTop}`);
   assert(metrics.searchHeight <= 62, `search box should be smaller, got height ${metrics.searchHeight}`);
   assert(metrics.horizontalPitch <= 120, `shortcut horizontal spacing should be tighter, got pitch ${metrics.horizontalPitch}`);
+  assert(metrics.gridColumns === 8, `shortcut grid should keep 8 columns, got ${metrics.gridColumns}`);
+  assert(metrics.secondRowLeftDelta <= 1, `new rows should start at the left edge, got delta ${metrics.secondRowLeftDelta}`);
+  assert(metrics.fortiethBottom < 640, `40th shortcut should stay comfortably in the first viewport, got ${metrics.fortiethBottom}`);
+  assert(metrics.settingsMenuWidth <= 64, `collapsed settings should only show a small gear, got width ${metrics.settingsMenuWidth}`);
+  assert(metrics.settingsPanelOpacity === '0', `settings panel should be hidden until hover/focus, got opacity ${metrics.settingsPanelOpacity}`);
+  assert(metrics.settingsPanelPointerEvents === 'none', `hidden settings panel should not catch pointer events`);
+
+  await page.click('.shortcut-card:nth-child(1)', { button: 'right' });
+  const dialogOpen = await page.$eval('#shortcutDialog', dialog => dialog.open);
+  const editedTitle = await page.$eval('#shortcutTitle', input => input.value);
+  assert(dialogOpen, 'right-clicking a shortcut should open the edit dialog');
+  assert(editedTitle === 'Site 0', `right-click edit should load the clicked shortcut, got ${editedTitle}`);
 
   console.log(JSON.stringify({ cardCount, dotCount, metrics }, null, 2));
 

@@ -6,7 +6,7 @@ const DB_VERSION = 2;
 const WALLPAPER_STORE = 'wallpapers';
 const ICON_STORE = 'icons';
 const WALLPAPER_ID = 'current';
-const PAGE_CAPACITY = 32;
+const PAGE_CAPACITY = 40;
 
 const DEFAULT_SHORTCUTS = [
   { title: 'YouTube', url: 'https://www.youtube.com', size: 'small' },
@@ -112,6 +112,7 @@ function bindEvents() {
   els.shortcutPage.addEventListener('dragover', handleDragOver);
   els.shortcutPage.addEventListener('drop', handleDrop);
   els.shortcutPage.addEventListener('dragend', handleDragEnd);
+  els.shortcutPage.addEventListener('contextmenu', handleShortcutContextMenu);
   els.shortcutPage.addEventListener('wheel', handleShortcutWheel, { passive: true });
   els.shortcutPage.addEventListener('touchstart', handleTouchStart, { passive: true });
   els.shortcutPage.addEventListener('touchend', handleTouchEnd, { passive: true });
@@ -216,8 +217,7 @@ function applyDensity() {
 
 function renderShortcuts() {
   const items = currentPageItems();
-  const columns = Math.min(8, Math.max(1, items.length));
-  els.shortcutPage.style.setProperty('--page-columns', String(columns));
+  els.shortcutPage.style.setProperty('--page-columns', '8');
   els.shortcutPage.innerHTML = items.map(renderShortcut).join('');
 
   if (movedShortcutId) {
@@ -226,6 +226,13 @@ function renderShortcuts() {
     setTimeout(() => movedCard?.classList.remove('moved-pop'), 320);
     movedShortcutId = null;
   }
+}
+
+function handleShortcutContextMenu(event) {
+  const card = event.target.closest('.shortcut-card');
+  if (!card || event.target.closest('[data-action]')) return;
+  event.preventDefault();
+  openShortcutDialog(card.dataset.id);
 }
 
 function renderShortcut(item) {

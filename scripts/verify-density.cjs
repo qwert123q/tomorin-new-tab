@@ -8,6 +8,11 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+async function revealSettings(page) {
+  await page.hover('.settings-trigger');
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('.settings-panel')).opacity === '1');
+}
+
 (async () => {
   const browser = await chromium.launch({
     headless: true,
@@ -30,6 +35,7 @@ function assert(condition, message) {
   const readIconWidth = () => page.$eval('.shortcut-icon', icon => parseFloat(getComputedStyle(icon).width));
   const smallWidth = await readIconWidth();
 
+  await revealSettings(page);
   await page.click('[data-action="set-density"][data-density="medium"]');
   const mediumWidth = await readIconWidth();
   assert(mediumWidth > smallWidth, `medium width ${mediumWidth} should be greater than small width ${smallWidth}`);
@@ -38,6 +44,7 @@ function assert(condition, message) {
   const persisted = await page.$eval('[data-action="set-density"][aria-pressed="true"]', button => button.dataset.density);
   assert(persisted === 'medium', 'selected density should persist after reload');
 
+  await revealSettings(page);
   await page.click('[data-action="set-density"][data-density="large"]');
   const largeWidth = await readIconWidth();
   assert(largeWidth > mediumWidth, `large width ${largeWidth} should be greater than medium width ${mediumWidth}`);

@@ -10,7 +10,9 @@ A lightweight Chrome new tab extension inspired by Infinity New Tab.
 - Shows paginated favorite website shortcuts.
 - Starts with a small generic shortcut set.
 - Adds, edits, deletes, resizes, and reorders shortcuts from the page.
+- Opens shortcut editing directly from a right-click.
 - Switches global icon density between 小 / 中 / 大.
+- Keeps controls tucked behind a hover/focus gear menu.
 - Imports website shortcuts from an Infinity New Tab backup JSON.
 - Uses a high-resolution favicon fallback chain to show website icons automatically.
 - Shows selectable icon candidates while editing a shortcut.

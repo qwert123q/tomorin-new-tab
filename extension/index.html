@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Tomorin New Tab</title>
-  <link rel="stylesheet" href="style.css?v=0.1.12">
+  <link rel="stylesheet" href="style.css?v=0.1.13">
 </head>
 <body>
   <main class="newtab-shell">
@@ -29,30 +29,37 @@
 
     <nav class="page-dots" id="pageDots" aria-label="Shortcut pages"></nav>
 
-    <div class="density-control" aria-label="图标大小">
-      <button type="button" data-action="set-density" data-density="small" aria-pressed="true">小</button>
-      <button type="button" data-action="set-density" data-density="medium" aria-pressed="false">中</button>
-      <button type="button" data-action="set-density" data-density="large" aria-pressed="false">大</button>
-    </div>
+    <div class="settings-menu" aria-label="Page controls">
+      <button class="icon-button settings-trigger" type="button" title="设置">
+        <span aria-hidden="true">⚙</span>
+      </button>
+      <div class="settings-panel">
+        <div class="density-control" aria-label="图标大小">
+          <button type="button" data-action="set-density" data-density="small" aria-pressed="true">小</button>
+          <button type="button" data-action="set-density" data-density="medium" aria-pressed="false">中</button>
+          <button type="button" data-action="set-density" data-density="large" aria-pressed="false">大</button>
+        </div>
 
-    <div class="toolbar" aria-label="Page controls">
-      <button class="icon-button" type="button" data-action="toggle-edit" title="编辑收藏">
-        <span aria-hidden="true">✎</span>
-      </button>
-      <button class="icon-button" type="button" data-action="add-shortcut" title="添加网站">
-        <span aria-hidden="true">+</span>
-      </button>
-      <label class="icon-button upload-button" title="更换壁纸">
-        <span aria-hidden="true">◐</span>
-        <input id="wallpaperInput" type="file" accept="image/*">
-      </label>
-      <label class="icon-button upload-button" title="导入 Infinity 备份">
-        <span aria-hidden="true">⇪</span>
-        <input id="importInput" type="file" accept=".infinity,.json,application/json,text/json">
-      </label>
-      <button class="icon-button" type="button" data-action="reset-wallpaper" title="重置壁纸">
-        <span aria-hidden="true">↺</span>
-      </button>
+        <div class="toolbar" aria-label="Page controls">
+          <button class="icon-button" type="button" data-action="toggle-edit" title="编辑收藏">
+            <span aria-hidden="true">✎</span>
+          </button>
+          <button class="icon-button" type="button" data-action="add-shortcut" title="添加网站">
+            <span aria-hidden="true">+</span>
+          </button>
+          <label class="icon-button upload-button" title="更换壁纸">
+            <span aria-hidden="true">◐</span>
+            <input id="wallpaperInput" type="file" accept="image/*">
+          </label>
+          <label class="icon-button upload-button" title="导入 Infinity 备份">
+            <span aria-hidden="true">⇪</span>
+            <input id="importInput" type="file" accept=".infinity,.json,application/json,text/json">
+          </label>
+          <button class="icon-button" type="button" data-action="reset-wallpaper" title="重置壁纸">
+            <span aria-hidden="true">↺</span>
+          </button>
+        </div>
+      </div>
     </div>
   </main>
 
@@ -104,6 +111,6 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-  <script src="app.js?v=0.1.12"></script>
+  <script src="app.js?v=0.1.13"></script>
 </body>
 </html>

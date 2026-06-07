@@ -10,6 +10,11 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+async function revealSettings(page) {
+  await page.hover('.settings-trigger');
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('.settings-panel')).opacity === '1');
+}
+
 function tinyPngBuffer() {
   return Buffer.from(tinyPngBase64, 'base64');
 }
@@ -120,6 +125,7 @@ async function countIconRecords(page) {
 
   await installSeedState(page);
   await page.goto(pageUrl, { waitUntil: 'domcontentloaded' });
+  await revealSettings(page);
   await page.click('[data-action="toggle-edit"]');
   await page.click('.shortcut-card');
   await page.click('[data-icon-kind="apple-touch"]');
@@ -141,6 +147,7 @@ async function countIconRecords(page) {
   const srcAfterReload = await page.$eval('.shortcut-icon img', img => img.getAttribute('src'));
   assert(srcAfterReload.startsWith('blob:'), `should render saved shortcut icon from local blob, got ${srcAfterReload}`);
 
+  await revealSettings(page);
   await page.click('[data-action="toggle-edit"]');
   await page.click('.shortcut-card');
   await page.setInputFiles('#shortcutIconInput', {

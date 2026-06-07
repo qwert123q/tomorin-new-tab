@@ -8,6 +8,11 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+async function revealSettings(page) {
+  await page.hover('.settings-trigger');
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('.settings-panel')).opacity === '1');
+}
+
 function tinyPngBuffer() {
   return Buffer.from(
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lVqK3wAAAABJRU5ErkJggg==',
@@ -103,6 +108,7 @@ async function readIconRecord(page, id = 'deep-link') {
   const fallbackSrc = await page.$eval('.shortcut-icon img', img => img.getAttribute('src'));
   assert(fallbackSrc.includes('icons.duckduckgo.com/ip3/tiktok.com.ico'), 'should fallback to DuckDuckGo favicon');
 
+  await revealSettings(page);
   await page.click('[data-action="toggle-edit"]');
   await page.click('.shortcut-card');
   const candidateCount = await page.$$eval('[data-action="select-icon"]', buttons => buttons.length);
