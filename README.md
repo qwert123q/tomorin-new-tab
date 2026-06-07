@@ -4,6 +4,10 @@ English | [简体中文](README.zh-CN.md)
 
 Tomorin New Tab is a lightweight, local-first Chrome new tab extension inspired by Infinity New Tab.
 
+## Screenshot
+
+![Tomorin New Tab example](docs/assets/example.png)
+
 ## Features
 
 - Replaces Chrome's new tab page.

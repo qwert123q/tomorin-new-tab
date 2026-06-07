@@ -4,6 +4,10 @@
 
 Tomorin New Tab 是一个轻量、本地优先的 Chrome 新标签页扩展，灵感来自 Infinity New Tab。
 
+## 示例截图
+
+![Tomorin New Tab 示例](docs/assets/example.png)
+
 ## 功能
 
 - 替换 Chrome 新标签页。
