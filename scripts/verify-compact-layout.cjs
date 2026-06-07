@@ -41,10 +41,10 @@ function assert(condition, message) {
   assert(tabCount === 0, `search category words should be removed, got ${tabCount}`);
 
   const cardCount = await page.$$eval('.shortcut-card', cards => cards.length);
-  assert(cardCount === 40, `first page should hold all 40 shortcuts, got ${cardCount}`);
+  assert(cardCount === 32, `first page should hold 32 shortcuts in a 4x8 layout, got ${cardCount}`);
 
   const dotCount = await page.$$eval('.page-dot', dots => dots.length);
-  assert(dotCount === 0, `pagination should disappear when 40 shortcuts fit on one page, got ${dotCount}`);
+  assert(dotCount === 2, `40 shortcuts should paginate into 2 pages with a 4x8 layout, got ${dotCount}`);
 
   const metrics = await page.evaluate(() => {
     const searchBox = document.querySelector('.search-box').getBoundingClientRect();
@@ -52,7 +52,7 @@ function assert(condition, message) {
     const first = document.querySelector('.shortcut-card:nth-child(1)').getBoundingClientRect();
     const second = document.querySelector('.shortcut-card:nth-child(2)').getBoundingClientRect();
     const ninth = document.querySelector('.shortcut-card:nth-child(9)').getBoundingClientRect();
-    const fortieth = document.querySelector('.shortcut-card:nth-child(40)').getBoundingClientRect();
+    const thirtySecond = document.querySelector('.shortcut-card:nth-child(32)').getBoundingClientRect();
     const pageStyle = getComputedStyle(document.querySelector('.shortcut-page'));
     const settingsMenu = document.querySelector('.settings-menu').getBoundingClientRect();
     const settingsTriggerStyle = getComputedStyle(document.querySelector('.settings-trigger'));
@@ -63,7 +63,7 @@ function assert(condition, message) {
       contentTop: content.top,
       horizontalPitch: second.left - first.left,
       secondRowLeftDelta: Math.abs(ninth.left - first.left),
-      fortiethBottom: fortieth.bottom,
+      thirtySecondBottom: thirtySecond.bottom,
       columnGap: pageStyle.columnGap,
       gridColumns: pageStyle.gridTemplateColumns.split(' ').length,
       settingsMenuWidth: settingsMenu.width,
@@ -82,7 +82,7 @@ function assert(condition, message) {
   assert(metrics.horizontalPitch <= 120, `shortcut horizontal spacing should be tighter, got pitch ${metrics.horizontalPitch}`);
   assert(metrics.gridColumns === 8, `shortcut grid should keep 8 columns, got ${metrics.gridColumns}`);
   assert(metrics.secondRowLeftDelta <= 1, `new rows should start at the left edge, got delta ${metrics.secondRowLeftDelta}`);
-  assert(metrics.fortiethBottom < 640, `40th shortcut should stay comfortably in the first viewport, got ${metrics.fortiethBottom}`);
+  assert(metrics.thirtySecondBottom < 640, `32nd shortcut should stay comfortably in the first viewport, got ${metrics.thirtySecondBottom}`);
   assert(metrics.settingsMenuWidth <= 64, `collapsed settings should only show a small gear, got width ${metrics.settingsMenuWidth}`);
   assert(parseFloat(metrics.settingsTriggerFontSize) >= 22, `settings gear should fill the round button, got font size ${metrics.settingsTriggerFontSize}`);
   assert(metrics.settingsTriggerBorderWidth === '0px', `settings gear should not have a circular border, got ${metrics.settingsTriggerBorderWidth}`);
