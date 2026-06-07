@@ -74,6 +74,8 @@ let pendingIconCleared = false;
 let pendingOriginalUrl = '';
 const activeIconUrls = new Map();
 const iconCacheInFlight = new Set();
+const pageIconCandidateCache = new Map();
+const pageIconCandidateRequests = new Map();
 
 init();
 
@@ -283,9 +285,10 @@ function iconSourceList(item) {
   return [...new Set(sources.filter(Boolean))];
 }
 
-function iconCandidatesForUrl(url, title = '') {
+function iconCandidatesForUrl(url, title = '', pageCandidates = []) {
   const direct = directFaviconUrls(url);
   const candidates = [
+    ...pageCandidates,
     { kind: 'apple-touch', url: direct.appleTouch },
     { kind: 'png32', url: direct.png32 },
     { kind: 'google', url: highResolutionFaviconUrl(url) },
@@ -649,14 +652,15 @@ function renderIconPreview() {
   const existing = editingId ? state.shortcuts.find(shortcut => shortcut.id === editingId) : null;
   const existingIconUrl = existing?.iconId && activeIconUrls.get(existing.iconId);
   const canUseExisting = existingIconUrl && !pendingIconCleared && url === pendingOriginalUrl;
-  const previewUrl = pendingIconUrl || (canUseExisting ? existingIconUrl : iconCandidatesForUrl(url, els.titleInput.value)[0]?.url);
+  const previewUrl = pendingIconUrl || (canUseExisting ? existingIconUrl : iconCandidatesForUrl(url, els.titleInput.value, pageIconCandidatesForUrl(url))[0]?.url);
   els.iconPreview.innerHTML = `<img src="${escapeHtml(previewUrl)}" alt="">`;
   els.clearIconButton.hidden = !(pendingIconUrl || canUseExisting);
 }
 
 function renderIconCandidates(url) {
   const title = els.titleInput.value || hostnameFromUrl(url);
-  const candidates = iconCandidatesForUrl(url, title);
+  requestPageIconCandidates(url);
+  const candidates = iconCandidatesForUrl(url, title, pageIconCandidatesForUrl(url));
   els.iconCandidates.innerHTML = candidates.map(candidate => {
     const selected = !pendingCustomIcon && pendingIconUrl === candidate.url;
     return `
@@ -665,6 +669,133 @@ function renderIconCandidates(url) {
       </button>
     `;
   }).join('');
+}
+
+function pageIconCandidatesForUrl(url) {
+  return pageIconCandidateCache.get(iconCandidateCacheKey(url)) || [];
+}
+
+function requestPageIconCandidates(url) {
+  const key = iconCandidateCacheKey(url);
+  if (!key || pageIconCandidateCache.has(key) || pageIconCandidateRequests.has(key)) return;
+
+  const request = discoverPageIconCandidates(url)
+    .then(candidates => {
+      pageIconCandidateCache.set(key, candidates);
+      if (els.urlInput.value && iconCandidateCacheKey(els.urlInput.value) === key && !pendingCustomIcon) {
+        renderIconPreview();
+      }
+    })
+    .catch(() => {
+      pageIconCandidateCache.set(key, []);
+    })
+    .finally(() => {
+      pageIconCandidateRequests.delete(key);
+    });
+
+  pageIconCandidateRequests.set(key, request);
+}
+
+async function discoverPageIconCandidates(url) {
+  const pageUrl = normalizeUrl(url);
+  const response = await fetch(pageUrl, {
+    cache: 'force-cache',
+    credentials: 'omit',
+  });
+  if (!response.ok) return [];
+
+  const html = await response.text();
+  const document = new DOMParser().parseFromString(html, 'text/html');
+  const candidates = declaredIconCandidatesFromDocument(document, response.url || pageUrl);
+  const manifestUrls = [...document.querySelectorAll('link[rel]')]
+    .filter(link => relValues(link.rel).includes('manifest'))
+    .map(link => absoluteIconUrl(link.getAttribute('href'), response.url || pageUrl))
+    .filter(Boolean);
+
+  for (const manifestUrl of manifestUrls.slice(0, 2)) {
+    candidates.push(...await declaredIconCandidatesFromManifest(manifestUrl));
+  }
+
+  return uniqueIconCandidates(candidates)
+    .sort((a, b) => (b.score || 0) - (a.score || 0))
+    .map(({ kind, url }) => ({ kind, url }))
+    .slice(0, 8);
+}
+
+function declaredIconCandidatesFromDocument(document, baseUrl) {
+  return [...document.querySelectorAll('link[rel][href]')]
+    .flatMap(link => {
+      const rels = relValues(link.rel);
+      const isIcon = rels.includes('icon')
+        || rels.includes('apple-touch-icon')
+        || rels.includes('apple-touch-icon-precomposed')
+        || rels.includes('mask-icon');
+      if (!isIcon) return [];
+
+      const url = absoluteIconUrl(link.getAttribute('href'), baseUrl);
+      if (!url) return [];
+
+      const size = largestDeclaredIconSize(link.getAttribute('sizes'), url);
+      const appleWeight = rels.some(rel => rel.startsWith('apple-touch-icon')) ? 2000 : 0;
+      const maskWeight = rels.includes('mask-icon') ? -500 : 0;
+      return [{ kind: 'page-icon', url, score: 1000 + appleWeight + maskWeight + size }];
+    });
+}
+
+async function declaredIconCandidatesFromManifest(manifestUrl) {
+  try {
+    const response = await fetch(manifestUrl, {
+      cache: 'force-cache',
+      credentials: 'omit',
+    });
+    if (!response.ok) return [];
+
+    const manifest = await response.json();
+    if (!Array.isArray(manifest.icons)) return [];
+
+    return manifest.icons.flatMap(icon => {
+      const url = absoluteIconUrl(icon.src, manifestUrl);
+      if (!url) return [];
+      return [{ kind: 'manifest-icon', url, score: 1500 + largestDeclaredIconSize(icon.sizes, url) }];
+    });
+  } catch {
+    return [];
+  }
+}
+
+function uniqueIconCandidates(candidates) {
+  const seen = new Set();
+  return candidates.filter(candidate => {
+    if (!candidate.url || seen.has(candidate.url)) return false;
+    seen.add(candidate.url);
+    return true;
+  });
+}
+
+function relValues(rel) {
+  return String(rel || '').toLowerCase().split(/\s+/).filter(Boolean);
+}
+
+function absoluteIconUrl(value, baseUrl) {
+  if (!value) return '';
+  try {
+    const url = new URL(value, baseUrl).toString();
+    return isFetchableIconUrl(url) ? url : '';
+  } catch {
+    return '';
+  }
+}
+
+function largestDeclaredIconSize(sizes, url = '') {
+  const declared = String(sizes || '')
+    .split(/\s+/)
+    .map(size => {
+      const match = size.match(/^(\d+)x(\d+)$/i);
+      return match ? Math.max(Number(match[1]), Number(match[2])) : 0;
+    });
+  const fromName = [...String(url).matchAll(/(?:^|[_-])(\d{2,4})x(\d{2,4})(?=[_.-])/gi)]
+    .map(match => Math.max(Number(match[1]), Number(match[2])));
+  return Math.max(0, ...declared, ...fromName);
 }
 
 function handleShortcutIconError(event) {
@@ -1027,6 +1158,16 @@ function shortcutUrlKey(url) {
     parsed.hash = '';
     if (parsed.pathname === '/') parsed.pathname = '';
     return parsed.toString().replace(/\/$/, '').toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+function iconCandidateCacheKey(url) {
+  try {
+    const parsed = new URL(normalizeUrl(url));
+    parsed.hash = '';
+    return parsed.toString();
   } catch {
     return '';
   }

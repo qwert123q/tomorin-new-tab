@@ -56,6 +56,16 @@ async function readIconRecord(page, id = 'deep-link') {
     const bytes = Uint8Array.from(atob(base64), char => char.charCodeAt(0));
     window.fetch = async input => {
       const url = typeof input === 'string' ? input : input.url;
+      if (url === 'https://www.tiktok.com/foryou?lang=es') {
+        return new Response(`
+          <!doctype html>
+          <link rel="icon" type="image/png" href="/declared-32.png">
+          <link rel="apple-touch-icon" sizes="180x180" href="/declared-180.png">
+        `, {
+          status: 200,
+          headers: { 'Content-Type': 'text/html' },
+        });
+      }
       if (url === 'https://icons.duckduckgo.com/ip3/tiktok.com.ico') {
         return new Response(bytes, {
           status: 200,
@@ -115,6 +125,10 @@ async function readIconRecord(page, id = 'deep-link') {
   await page.click('.shortcut-card');
   const candidateCount = await page.$$eval('[data-action="select-icon"]', buttons => buttons.length);
   assert(candidateCount >= 4, `should render icon candidates, got ${candidateCount}`);
+  await page.waitForFunction(() => {
+    return [...document.querySelectorAll('[data-action="select-icon"]')]
+      .some(button => button.dataset.iconUrl === 'https://www.tiktok.com/declared-180.png');
+  }, null, { timeout: 1000 });
 
   await page.click('[data-icon-kind="duckduckgo"]');
   await page.click('button[type="submit"]');
