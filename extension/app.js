@@ -73,6 +73,7 @@ let pendingIconUrl = '';
 let pendingIconCleared = false;
 let pendingOriginalUrl = '';
 const activeIconUrls = new Map();
+const iconCacheInFlight = new Set();
 
 init();
 
@@ -104,6 +105,7 @@ function bindEvents() {
       renderIconPreview();
     }
   });
+  els.shortcutPage.addEventListener('load', handleShortcutIconLoad, true);
   els.shortcutPage.addEventListener('error', handleShortcutIconError, true);
   document.addEventListener('keydown', handleKeydown);
   els.shortcutPage.addEventListener('dragstart', handleDragStart);
@@ -669,6 +671,44 @@ function handleShortcutIconError(event) {
 
   img.dataset.fallbackIndex = String(index + 1);
   img.src = next;
+}
+
+function handleShortcutIconLoad(event) {
+  const img = event.target;
+  if (!(img instanceof HTMLImageElement) || !img.closest('.shortcut-icon')) return;
+  cacheDisplayedShortcutIcon(img);
+}
+
+async function cacheDisplayedShortcutIcon(img) {
+  const card = img.closest('.shortcut-card');
+  const id = card?.dataset.id || '';
+  const sourceUrl = img.currentSrc || img.getAttribute('src') || '';
+  if (!id || !isFetchableIconUrl(sourceUrl)) return;
+
+  const item = state.shortcuts.find(shortcut => shortcut.id === id);
+  if (!item) return;
+  if (item.iconId === id && activeIconUrls.has(id) && item.iconUrl === sourceUrl) return;
+
+  const cacheKey = `${id}:${sourceUrl}`;
+  if (iconCacheInFlight.has(cacheKey)) return;
+
+  iconCacheInFlight.add(cacheKey);
+  try {
+    const blob = await iconSourceToBlob(sourceUrl);
+    await saveIconRecord(id, blob, sourceUrl);
+    setActiveIconUrl(id, blob);
+
+    const target = state.shortcuts.find(shortcut => shortcut.id === id);
+    if (!target) return;
+    target.iconId = id;
+    target.iconUrl = isHttpUrl(sourceUrl) ? sourceUrl : '';
+    delete target.customIcon;
+    await saveState();
+  } catch {
+    // The browser may display an image that cannot be fetched by script; keep using the visible source.
+  } finally {
+    iconCacheInFlight.delete(cacheKey);
+  }
 }
 
 function parseIconFallbacks(value) {

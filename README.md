@@ -16,6 +16,7 @@ A lightweight Chrome new tab extension inspired by Infinity New Tab.
 - Shows selectable icon candidates while editing a shortcut.
 - Supports per-shortcut custom icon uploads for sites that cannot be resolved automatically.
 - Caches saved shortcut icons into local IndexedDB and renders from the local copy after that.
+- Automatically caches whichever shortcut icon successfully renders, so repeated new tabs reuse the local icon.
 - Keeps uploaded wallpapers sharp by avoiding display blur and preserving near-4K resolution.
 - Stores shortcut data locally with `chrome.storage.local`.
 - Stores uploaded wallpaper images locally in IndexedDB.
