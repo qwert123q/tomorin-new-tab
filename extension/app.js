@@ -6,7 +6,7 @@ const DB_VERSION = 2;
 const WALLPAPER_STORE = 'wallpapers';
 const ICON_STORE = 'icons';
 const WALLPAPER_ID = 'current';
-const PAGE_CAPACITY = 24;
+const PAGE_CAPACITY = 32;
 
 const DEFAULT_SHORTCUTS = [
   { title: 'YouTube', url: 'https://www.youtube.com', size: 'small' },
