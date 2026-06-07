@@ -147,6 +147,27 @@ async function readIconRecord(page, id = 'deep-link') {
     candidateAfterError === candidateBeforeError - 1,
     `broken icon candidates should be removed, got ${candidateBeforeError} -> ${candidateAfterError}`,
   );
+  const candidateLayout = await page.evaluate(() => {
+    const dialog = document.querySelector('.dialog-card').getBoundingClientRect();
+    const candidates = document.querySelector('.icon-candidates').getBoundingClientRect();
+    return {
+      dialogLeft: dialog.left,
+      dialogRight: dialog.right,
+      candidatesLeft: candidates.left,
+      candidatesRight: candidates.right,
+      candidatesClientWidth: document.querySelector('.icon-candidates').clientWidth,
+      candidatesScrollWidth: document.querySelector('.icon-candidates').scrollWidth,
+    };
+  });
+  assert(
+    candidateLayout.candidatesLeft >= candidateLayout.dialogLeft
+      && candidateLayout.candidatesRight <= candidateLayout.dialogRight,
+    `icon candidates should stay inside dialog, got ${JSON.stringify(candidateLayout)}`,
+  );
+  assert(
+    candidateLayout.candidatesScrollWidth <= candidateLayout.candidatesClientWidth + 1,
+    `icon candidates should wrap instead of horizontal overflow, got ${JSON.stringify(candidateLayout)}`,
+  );
 
   await page.click('[data-icon-kind="duckduckgo"]');
   await page.click('button[type="submit"]');

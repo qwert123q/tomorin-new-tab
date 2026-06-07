@@ -579,7 +579,7 @@ button {
 
 .icon-picker {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   flex-wrap: wrap;
   gap: 10px;
 }
@@ -605,9 +605,14 @@ button {
 
 .icon-candidates {
   display: flex;
+  flex: 1 1 220px;
+  flex-wrap: wrap;
+  min-width: 0;
   max-width: 100%;
   gap: 8px;
-  overflow-x: auto;
+  max-height: 100px;
+  overflow-x: hidden;
+  overflow-y: auto;
   padding: 3px;
 }
 
