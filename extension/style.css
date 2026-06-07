@@ -568,6 +568,28 @@ button {
   box-shadow: 0 0 0 3px rgba(47, 135, 255, 0.16);
 }
 
+.sync-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: #344054;
+  font-size: 15px;
+}
+
+.sync-toggle input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+}
+
+.sync-status {
+  min-height: 38px;
+  margin: -4px 0 0;
+  color: #667085;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
 .size-field {
   display: flex;
   gap: 18px;

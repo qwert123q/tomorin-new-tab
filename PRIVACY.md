@@ -2,6 +2,8 @@
 
 Tomorin New Tab is designed as a local-first Chrome new tab extension.
 
+Optional self-hosted sync is disabled by default. When the user enables it, the extension sends shortcut metadata to the server URL configured by the user.
+
 ## Data Stored Locally
 
 The extension stores the following data in the current Chrome profile:
@@ -23,11 +25,19 @@ The extension may make network requests for icon discovery and caching:
 
 These requests are used only to display or cache shortcut icons.
 
+If optional self-hosted sync is enabled, the extension also sends and receives:
+
+- Shortcut titles, URLs, size, order, and icon source URLs.
+- Shortcut deletion tombstones.
+- The icon density setting.
+
+Optional sync does not upload wallpaper image files or cached shortcut icon image files.
+
 ## What This Extension Does Not Do
 
 - It does not require an account.
 - It does not run a remote backend controlled by this project.
-- It does not upload shortcut data, wallpaper images, or saved icon images to a project server.
+- It does not upload wallpaper images or saved icon images to a project server.
 - It does not sell, share, or broker user data.
 - It does not use analytics, tracking pixels, advertising SDKs, or telemetry.
 

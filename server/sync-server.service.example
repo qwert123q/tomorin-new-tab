@@ -1,0 +1,14 @@
+[Unit]
+Description=Tomorin New Tab sync server
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/tomorin-new-tab-sync
+EnvironmentFile=%h/tomorin-new-tab-sync/.env
+ExecStart=/usr/bin/node %h/tomorin-new-tab-sync/server/sync-server.js
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

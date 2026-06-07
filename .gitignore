@@ -3,3 +3,7 @@
 node_modules/
 dist/
 docs/superpowers/
+*.crx
+*.pem
+.env
+server/data/

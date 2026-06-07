@@ -7,6 +7,11 @@ const WALLPAPER_STORE = 'wallpapers';
 const ICON_STORE = 'icons';
 const WALLPAPER_ID = 'current';
 const PAGE_CAPACITY = 40;
+const SYNC_SCHEMA_VERSION = 1;
+const SYNC_STARTUP_MIN_INTERVAL_MS = 5 * 60 * 1000;
+const SYNC_REQUEST_TIMEOUT_MS = 3500;
+const SYNC_DEBOUNCE_MS = 900;
+const DEFAULT_SHORTCUT_UPDATED_AT = 1700000000000;
 
 const DEFAULT_SHORTCUTS = [
   { title: 'YouTube', url: 'https://www.youtube.com', size: 'small' },
@@ -23,11 +28,21 @@ const DEFAULT_STATE = {
     url: item.url,
     size: item.size,
     order: index,
+    updatedAt: DEFAULT_SHORTCUT_UPDATED_AT,
   })),
+  deletedShortcuts: [],
   settings: {
     currentPage: 0,
     wallpaper: { type: 'none' },
     iconDensity: 'small',
+  },
+  sync: {
+    enabled: false,
+    endpoint: '',
+    token: '',
+    lastSyncAt: 0,
+    pending: false,
+    lastError: '',
   },
 };
 
@@ -47,6 +62,12 @@ const els = {
   densityButtons: [...document.querySelectorAll('[data-action="set-density"]')],
   wallpaperInput: document.getElementById('wallpaperInput'),
   importInput: document.getElementById('importInput'),
+  syncDialog: document.getElementById('syncDialog'),
+  syncForm: document.getElementById('syncForm'),
+  syncEnabled: document.getElementById('syncEnabled'),
+  syncEndpoint: document.getElementById('syncEndpoint'),
+  syncToken: document.getElementById('syncToken'),
+  syncStatus: document.getElementById('syncStatus'),
   dialog: document.getElementById('shortcutDialog'),
   shortcutForm: document.getElementById('shortcutForm'),
   dialogTitle: document.getElementById('dialogTitle'),
@@ -72,6 +93,8 @@ let pendingCustomIcon = '';
 let pendingIconUrl = '';
 let pendingIconCleared = false;
 let pendingOriginalUrl = '';
+let syncTimer = null;
+let syncInFlight = false;
 const activeIconUrls = new Map();
 const iconCacheInFlight = new Set();
 const pageIconCandidateCache = new Map();
@@ -86,12 +109,14 @@ async function init() {
   bindEvents();
   render();
   if (!globalThis.__TOMORIN_DISABLE_AUTO_ICON_CACHE) cacheMissingShortcutIcons();
+  scheduleSync('startup');
 }
 
 function bindEvents() {
   els.searchForm.addEventListener('submit', handleSearch);
   document.addEventListener('click', handleDocumentClick);
   els.shortcutForm.addEventListener('submit', handleShortcutSubmit);
+  els.syncForm.addEventListener('submit', handleSyncSubmit);
   els.wallpaperInput.addEventListener('change', handleWallpaperUpload);
   els.importInput.addEventListener('change', handleInfinityImport);
   els.iconInput.addEventListener('change', handleShortcutIconUpload);
@@ -134,6 +159,7 @@ async function loadState() {
 }
 
 function normalizeState(saved) {
+  const deletedShortcuts = normalizeDeletedShortcuts(saved.deletedShortcuts);
   const shortcuts = saved.shortcuts
     .filter(item => item && item.title && item.url)
     .map((item, index) => ({
@@ -145,7 +171,9 @@ function normalizeState(saved) {
       customIcon: isImageDataUrl(item.customIcon) ? item.customIcon : '',
       iconUrl: isHttpUrl(item.iconUrl) ? item.iconUrl : '',
       order: Number.isFinite(item.order) ? item.order : index,
+      updatedAt: Number.isFinite(item.updatedAt) ? item.updatedAt : DEFAULT_SHORTCUT_UPDATED_AT,
     }))
+    .filter(item => !isShortcutDeleted(item, deletedShortcuts))
     .sort((a, b) => a.order - b.order)
     .map((item, index) => ({ ...item, order: index }));
 
@@ -159,13 +187,44 @@ function normalizeState(saved) {
       : 'small',
   };
 
-  return { shortcuts, settings };
+  const sync = {
+    enabled: Boolean(saved.sync?.enabled),
+    endpoint: normalizeSyncEndpoint(saved.sync?.endpoint || ''),
+    token: typeof saved.sync?.token === 'string' ? saved.sync.token : '',
+    lastSyncAt: Number.isFinite(saved.sync?.lastSyncAt) ? saved.sync.lastSyncAt : 0,
+    pending: Boolean(saved.sync?.pending),
+    lastError: typeof saved.sync?.lastError === 'string' ? saved.sync.lastError.slice(0, 160) : '',
+  };
+
+  return { shortcuts, deletedShortcuts, settings, sync };
 }
 
-async function saveState() {
+function normalizeDeletedShortcuts(deletedShortcuts) {
+  if (!Array.isArray(deletedShortcuts)) return [];
+  return deletedShortcuts
+    .filter(item => item && typeof item.id === 'string' && item.id)
+    .map(item => ({
+      id: item.id,
+      url: typeof item.url === 'string' ? normalizeUrl(item.url) : '',
+      deletedAt: Number.isFinite(item.deletedAt) ? item.deletedAt : Date.now(),
+    }))
+    .sort((a, b) => b.deletedAt - a.deletedAt)
+    .slice(0, 300);
+}
+
+function isShortcutDeleted(item, deletedShortcuts = state.deletedShortcuts || []) {
+  const tombstone = deletedShortcuts.find(deleted => (
+    deleted.id === item.id || (deleted.url && shortcutUrlKey(deleted.url) === shortcutUrlKey(item.url))
+  ));
+  return Boolean(tombstone && tombstone.deletedAt >= (item.updatedAt || 0));
+}
+
+async function saveState(options = {}) {
   state.shortcuts = orderedShortcuts().map((item, index) => ({ ...item, order: index }));
+  state.deletedShortcuts = normalizeDeletedShortcuts(state.deletedShortcuts);
   state.settings.currentPage = clampPage(state.settings.currentPage);
   await persistState(state);
+  if (options.sync !== false) scheduleSync('save');
 }
 
 async function persistState(nextState) {
@@ -439,6 +498,21 @@ async function handleDocumentClick(event) {
     return;
   }
 
+  if (action === 'open-sync-dialog') {
+    openSyncDialog();
+    return;
+  }
+
+  if (action === 'close-sync-dialog') {
+    closeSyncDialog();
+    return;
+  }
+
+  if (action === 'sync-now') {
+    await syncNowFromDialog();
+    return;
+  }
+
   if (action === 'delete-shortcut') {
     await deleteEditingShortcut();
     return;
@@ -517,6 +591,85 @@ function closeShortcutDialog() {
   els.dialog.close();
 }
 
+function openSyncDialog() {
+  const sync = state.sync || {};
+  els.syncEnabled.checked = Boolean(sync.enabled);
+  els.syncEndpoint.value = sync.endpoint || '';
+  els.syncToken.value = sync.token || '';
+  renderSyncStatus();
+  els.syncDialog.showModal();
+  requestAnimationFrame(() => els.syncEndpoint.focus());
+}
+
+function closeSyncDialog() {
+  els.syncDialog.close();
+}
+
+async function handleSyncSubmit(event) {
+  event.preventDefault();
+  state.sync = {
+    ...(state.sync || {}),
+    enabled: Boolean(els.syncEnabled.checked),
+    endpoint: normalizeSyncEndpoint(els.syncEndpoint.value),
+    token: els.syncToken.value.trim(),
+    pending: true,
+    lastError: '',
+  };
+  await persistState(state);
+  renderSyncStatus();
+  showToast(state.sync.enabled ? '同步设置已保存' : '同步已关闭');
+  closeSyncDialog();
+  scheduleSync('manual');
+}
+
+async function syncNowFromDialog() {
+  state.sync = {
+    ...(state.sync || {}),
+    enabled: Boolean(els.syncEnabled.checked),
+    endpoint: normalizeSyncEndpoint(els.syncEndpoint.value),
+    token: els.syncToken.value.trim(),
+    pending: true,
+    lastError: '',
+  };
+  await persistState(state);
+  renderSyncStatus('正在同步');
+  await syncStateNow({ force: true });
+  renderSyncStatus();
+}
+
+function renderSyncStatus(override = '') {
+  if (!els.syncStatus) return;
+  if (override) {
+    els.syncStatus.textContent = override;
+    return;
+  }
+
+  const sync = state.sync || {};
+  if (!sync.enabled) {
+    els.syncStatus.textContent = '未启用。启用后只同步收藏网站元数据和图标来源，不上传壁纸或图标图片。';
+    return;
+  }
+
+  if (!sync.endpoint || !sync.token) {
+    els.syncStatus.textContent = '请填写服务器地址和访问令牌。';
+    return;
+  }
+
+  if (sync.lastError) {
+    els.syncStatus.textContent = `上次失败：${sync.lastError}`;
+    return;
+  }
+
+  if (sync.pending) {
+    els.syncStatus.textContent = '有本地修改待同步。';
+    return;
+  }
+
+  els.syncStatus.textContent = sync.lastSyncAt
+    ? `上次同步：${new Date(sync.lastSyncAt).toLocaleString()}`
+    : '尚未同步。';
+}
+
 async function handleShortcutSubmit(event) {
   event.preventDefault();
   const title = els.titleInput.value.trim();
@@ -526,6 +679,7 @@ async function handleShortcutSubmit(event) {
   if (!title || !url) return;
 
   showToast('正在保存');
+  const now = Date.now();
 
   if (editingId) {
     const previous = state.shortcuts.find(shortcut => shortcut.id === editingId);
@@ -535,6 +689,7 @@ async function handleShortcutSubmit(event) {
       title,
       url,
       size,
+      updatedAt: now,
     }, previous);
     state.shortcuts = state.shortcuts.map(item => (
       item.id === editingId ? next : item
@@ -548,6 +703,7 @@ async function handleShortcutSubmit(event) {
       url,
       size,
       order: state.shortcuts.length,
+      updatedAt: now,
     }, null);
     state.shortcuts.push(next);
     state.settings.currentPage = pageCount() - 1;
@@ -890,6 +1046,7 @@ async function cacheDisplayedShortcutIcon(img) {
     if (!target) return;
     target.iconId = id;
     target.iconUrl = isHttpUrl(sourceUrl) ? sourceUrl : '';
+    target.updatedAt = Date.now();
     delete target.customIcon;
     await saveState();
   } catch {
@@ -940,11 +1097,13 @@ function imageFileToIconDataUrl(file, canvasSize) {
 async function deleteEditingShortcut() {
   if (!editingId) return;
   const idToDelete = editingId;
+  const previous = state.shortcuts.find(item => item.id === idToDelete);
   closeShortcutDialog();
   const card = els.shortcutPage.querySelector(`[data-id="${idToDelete}"]`);
   card?.classList.add('removing');
   await sleep(card ? 220 : 0);
   state.shortcuts = state.shortcuts.filter(item => item.id !== idToDelete);
+  rememberDeletedShortcut(previous);
   await deleteIconRecord(idToDelete);
   await saveState();
   showToast('已删除');
@@ -957,7 +1116,7 @@ async function goToPage(page) {
   els.shortcutPage.classList.add('switching');
   await sleep(120);
   state.settings.currentPage = nextPage;
-  await saveState();
+  await saveState({ sync: false });
   render();
   requestAnimationFrame(() => els.shortcutPage.classList.remove('switching'));
 }
@@ -1035,7 +1194,8 @@ function reorderShortcuts(sourceId, targetId) {
   if (from === -1 || to === -1) return;
   const [moved] = ordered.splice(from, 1);
   ordered.splice(to, 0, moved);
-  state.shortcuts = ordered.map((item, index) => ({ ...item, order: index }));
+  const now = Date.now();
+  state.shortcuts = ordered.map((item, index) => ({ ...item, order: index, updatedAt: now }));
   movedShortcutId = sourceId;
 }
 
@@ -1053,7 +1213,7 @@ async function handleWallpaperUpload(event) {
     const blob = await compressImage(file, 4096, 0.94);
     await saveWallpaperBlob(blob);
     state.settings.wallpaper = { type: 'uploaded' };
-    await saveState();
+    await saveState({ sync: false });
     await applyWallpaper();
     showToast('壁纸已更新');
   } catch {
@@ -1094,8 +1254,8 @@ async function handleInfinityImport(event) {
       url: item.url,
       size: 'small',
       order: state.shortcuts.length + index,
+      updatedAt: Date.now(),
     })));
-    await saveState();
     state.settings.currentPage = pageCount() - 1;
     await saveState();
     render();
@@ -1213,6 +1373,18 @@ function shortcutUrlKey(url) {
   }
 }
 
+function rememberDeletedShortcut(shortcut) {
+  if (!shortcut?.id) return;
+  state.deletedShortcuts = normalizeDeletedShortcuts([
+    ...(state.deletedShortcuts || []),
+    {
+      id: shortcut.id,
+      url: shortcut.url || '',
+      deletedAt: Date.now(),
+    },
+  ]);
+}
+
 function iconCandidateCacheKey(url) {
   try {
     const parsed = new URL(normalizeUrl(url));
@@ -1221,6 +1393,252 @@ function iconCandidateCacheKey(url) {
   } catch {
     return '';
   }
+}
+
+function normalizeSyncEndpoint(value) {
+  const endpoint = String(value || '').trim().replace(/\/+$/, '');
+  if (!endpoint) return '';
+  try {
+    const url = new URL(endpoint);
+    return ['http:', 'https:'].includes(url.protocol) ? url.toString().replace(/\/+$/, '') : '';
+  } catch {
+    return '';
+  }
+}
+
+function shouldSync(reason) {
+  const sync = state.sync || {};
+  if (!sync.enabled || !sync.endpoint || !sync.token) return false;
+  if (reason !== 'startup') return true;
+  if (sync.pending) return true;
+  return Date.now() - (sync.lastSyncAt || 0) > SYNC_STARTUP_MIN_INTERVAL_MS;
+}
+
+function scheduleSync(reason) {
+  if (!shouldSync(reason)) return;
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(() => {
+    syncStateNow({ force: reason === 'manual' }).catch(() => {});
+  }, reason === 'startup' ? 1200 : SYNC_DEBOUNCE_MS);
+}
+
+async function syncStateNow({ force = false } = {}) {
+  if (syncInFlight || !shouldSync(force ? 'manual' : 'save')) return;
+  syncInFlight = true;
+
+  try {
+    const sync = state.sync;
+    const remote = await syncRequest('GET', sync.endpoint, sync.token);
+    const beforePayload = exportSyncPayload(state);
+    const mergeChanged = await applyRemoteSyncPayload(remote);
+    if (mergeChanged) {
+      state.settings.currentPage = clampPage(state.settings.currentPage);
+      await persistState(state);
+      await hydrateShortcutIcons();
+      render();
+    }
+
+    const nextPayload = exportSyncPayload(state);
+    if (sync.pending || !sameSyncPayload(beforePayload, remote) || !sameSyncPayload(nextPayload, remote)) {
+      await syncRequest('PUT', sync.endpoint, sync.token, nextPayload);
+    }
+
+    state.sync = {
+      ...state.sync,
+      pending: false,
+      lastError: '',
+      lastSyncAt: Date.now(),
+    };
+    await persistState(state);
+    if (force) showToast('同步完成');
+  } catch (error) {
+    state.sync = {
+      ...(state.sync || {}),
+      pending: true,
+      lastError: friendlySyncError(error),
+    };
+    await persistState(state);
+    if (force) showToast('同步失败');
+  } finally {
+    syncInFlight = false;
+  }
+}
+
+async function syncRequest(method, endpoint, token, body = null) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SYNC_REQUEST_TIMEOUT_MS);
+  try {
+    const response = await fetch(`${endpoint}/api/state`, {
+      method,
+      cache: 'no-store',
+      credentials: 'omit',
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        ...(body ? { 'Content-Type': 'application/json' } : {}),
+      },
+      body: body ? JSON.stringify(body) : null,
+    });
+
+    if (response.status === 401 || response.status === 403) throw new Error('token');
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return method === 'GET' ? await response.json() : null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function exportSyncPayload(sourceState) {
+  return {
+    schemaVersion: SYNC_SCHEMA_VERSION,
+    updatedAt: Date.now(),
+    shortcuts: orderedShortcutsFrom(sourceState.shortcuts).map(item => ({
+      id: item.id,
+      title: item.title,
+      url: item.url,
+      size: ['small', 'medium', 'large'].includes(item.size) ? item.size : 'small',
+      iconUrl: isHttpUrl(item.iconUrl) ? item.iconUrl : '',
+      order: Number.isFinite(item.order) ? item.order : 0,
+      updatedAt: Number.isFinite(item.updatedAt) ? item.updatedAt : DEFAULT_SHORTCUT_UPDATED_AT,
+    })),
+    deletedShortcuts: normalizeDeletedShortcuts(sourceState.deletedShortcuts),
+    settings: {
+      iconDensity: ['small', 'medium', 'large'].includes(sourceState.settings?.iconDensity)
+        ? sourceState.settings.iconDensity
+        : 'small',
+    },
+  };
+}
+
+async function applyRemoteSyncPayload(payload) {
+  if (!payload || payload.schemaVersion !== SYNC_SCHEMA_VERSION || !Array.isArray(payload.shortcuts)) {
+    return false;
+  }
+
+  let changed = false;
+  const localById = new Map(state.shortcuts.map(item => [item.id, item]));
+  const localByUrl = new Map(state.shortcuts.map(item => [shortcutUrlKey(item.url), item]).filter(([, item]) => item));
+  const nextShortcuts = [...state.shortcuts];
+  const remoteDeleted = normalizeDeletedShortcuts(payload.deletedShortcuts);
+
+  for (const deleted of remoteDeleted) {
+    const index = nextShortcuts.findIndex(item => (
+      item.id === deleted.id || (deleted.url && shortcutUrlKey(item.url) === shortcutUrlKey(deleted.url))
+    ));
+    if (index === -1) continue;
+    if (deleted.deletedAt >= (nextShortcuts[index].updatedAt || 0)) {
+      await deleteIconRecord(nextShortcuts[index].id);
+      nextShortcuts.splice(index, 1);
+      changed = true;
+    }
+  }
+
+  for (const remote of payload.shortcuts) {
+    const remoteItem = normalizeSyncShortcut(remote);
+    if (!remoteItem || isShortcutDeleted(remoteItem, remoteDeleted)) continue;
+    const local = localById.get(remoteItem.id) || localByUrl.get(shortcutUrlKey(remoteItem.url));
+    const tombstone = [...remoteDeleted, ...(state.deletedShortcuts || [])].find(deleted => (
+      deleted.id === remoteItem.id || (deleted.url && shortcutUrlKey(deleted.url) === shortcutUrlKey(remoteItem.url))
+    ));
+    if (tombstone && tombstone.deletedAt >= remoteItem.updatedAt) continue;
+
+    if (!local) {
+      nextShortcuts.push(remoteItem);
+      changed = true;
+      continue;
+    }
+
+    if (remoteItem.updatedAt >= (local.updatedAt || 0)) {
+      const index = nextShortcuts.findIndex(item => item.id === local.id);
+      const merged = mergeRemoteShortcut(remoteItem, local);
+      if (index !== -1 && JSON.stringify(nextShortcuts[index]) !== JSON.stringify(merged)) {
+        if (local.id !== merged.id) await deleteIconRecord(local.id);
+        nextShortcuts[index] = merged;
+        changed = true;
+      }
+    }
+  }
+
+  const mergedDeleted = mergeDeletedShortcuts(state.deletedShortcuts, remoteDeleted);
+  if (JSON.stringify(mergedDeleted) !== JSON.stringify(state.deletedShortcuts || [])) {
+    state.deletedShortcuts = mergedDeleted;
+    changed = true;
+  }
+
+  const remoteDensity = payload.settings?.iconDensity;
+  if (['small', 'medium', 'large'].includes(remoteDensity) && state.settings.iconDensity !== remoteDensity) {
+    state.settings.iconDensity = remoteDensity;
+    changed = true;
+  }
+
+  if (changed) {
+    state.shortcuts = orderedShortcutsFrom(nextShortcuts)
+      .filter(item => !isShortcutDeleted(item, state.deletedShortcuts))
+      .map((item, index) => ({ ...item, order: index }));
+  }
+
+  return changed;
+}
+
+function normalizeSyncShortcut(item) {
+  if (!item || typeof item.id !== 'string' || !item.id || !item.title || !item.url) return null;
+  return normalizeShortcutForSave({
+    id: item.id,
+    title: String(item.title).slice(0, 80),
+    url: normalizeUrl(String(item.url)),
+    size: ['small', 'medium', 'large'].includes(item.size) ? item.size : 'small',
+    iconUrl: isHttpUrl(item.iconUrl) ? item.iconUrl : '',
+    order: Number.isFinite(item.order) ? item.order : 0,
+    updatedAt: Number.isFinite(item.updatedAt) ? item.updatedAt : DEFAULT_SHORTCUT_UPDATED_AT,
+  });
+}
+
+function mergeRemoteShortcut(remote, local) {
+  const sameIconSource = !remote.iconUrl || remote.iconUrl === local.iconUrl;
+  return normalizeShortcutForSave({
+    ...remote,
+    iconId: sameIconSource ? local.iconId : '',
+    iconUrl: remote.iconUrl || local.iconUrl || '',
+  });
+}
+
+function mergeDeletedShortcuts(localDeleted = [], remoteDeleted = []) {
+  const byId = new Map();
+  for (const item of normalizeDeletedShortcuts([...localDeleted, ...remoteDeleted])) {
+    const key = item.id;
+    const previous = byId.get(key);
+    if (!previous || item.deletedAt > previous.deletedAt) byId.set(key, item);
+  }
+  return [...byId.values()].sort((a, b) => b.deletedAt - a.deletedAt).slice(0, 300);
+}
+
+function orderedShortcutsFrom(shortcuts) {
+  return [...(shortcuts || [])].sort((a, b) => (a.order || 0) - (b.order || 0));
+}
+
+function sameSyncPayload(left, right) {
+  if (!right || right.schemaVersion !== SYNC_SCHEMA_VERSION) return false;
+  const comparable = payload => JSON.stringify({
+    schemaVersion: payload.schemaVersion,
+    shortcuts: orderedShortcutsFrom(payload.shortcuts).map(item => ({
+      id: item.id,
+      title: item.title,
+      url: item.url,
+      size: item.size,
+      iconUrl: item.iconUrl || '',
+      order: item.order || 0,
+      updatedAt: item.updatedAt || DEFAULT_SHORTCUT_UPDATED_AT,
+    })),
+    deletedShortcuts: normalizeDeletedShortcuts(payload.deletedShortcuts),
+    settings: { iconDensity: payload.settings?.iconDensity || 'small' },
+  });
+  return comparable(left) === comparable(right);
+}
+
+function friendlySyncError(error) {
+  if (error?.name === 'AbortError') return '服务器响应超时';
+  if (error?.message === 'token') return '令牌不正确';
+  return String(error?.message || '网络不可用').slice(0, 120);
 }
 
 function isImageDataUrl(value) {
@@ -1298,7 +1716,7 @@ async function applyWallpaper() {
   const blob = await getWallpaperBlob();
   if (!blob) {
     state.settings.wallpaper = { type: 'none' };
-    await saveState();
+    await saveState({ sync: false });
     els.body.classList.remove('has-wallpaper');
     els.body.style.removeProperty('--wallpaper-url');
     return;
@@ -1312,7 +1730,7 @@ async function applyWallpaper() {
 async function resetWallpaper() {
   await deleteWallpaperBlob();
   state.settings.wallpaper = { type: 'none' };
-  await saveState();
+  await saveState({ sync: false });
   await applyWallpaper();
   showToast('壁纸已重置');
 }
@@ -1396,6 +1814,7 @@ async function cacheMissingShortcutIcons() {
     if (!cached) continue;
     item.iconId = item.id;
     item.iconUrl = isHttpUrl(cached.sourceUrl) ? cached.sourceUrl : '';
+    item.updatedAt = Date.now();
     changed = true;
   }
 

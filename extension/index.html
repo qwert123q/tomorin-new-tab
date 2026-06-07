@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Tomorin New Tab</title>
-  <link rel="stylesheet" href="style.css?v=0.1.21">
+  <link rel="stylesheet" href="style.css?v=0.1.22">
 </head>
 <body>
   <main class="newtab-shell">
@@ -55,6 +55,9 @@
             <span aria-hidden="true">⇪</span>
             <input id="importInput" type="file" accept=".infinity,.json,application/json,text/json">
           </label>
+          <button class="icon-button" type="button" data-action="open-sync-dialog" title="同步设置">
+            <span aria-hidden="true">⇄</span>
+          </button>
           <button class="icon-button" type="button" data-action="reset-wallpaper" title="重置壁纸">
             <span aria-hidden="true">↺</span>
           </button>
@@ -109,8 +112,41 @@
     </form>
   </dialog>
 
+  <dialog class="shortcut-dialog sync-dialog" id="syncDialog">
+    <form method="dialog" class="dialog-card" id="syncForm">
+      <div class="dialog-head">
+        <h2>同步设置</h2>
+        <button class="icon-button compact" type="button" data-action="close-sync-dialog" title="关闭">×</button>
+      </div>
+
+      <label class="sync-toggle">
+        <input id="syncEnabled" type="checkbox">
+        <span>启用轻量同步</span>
+      </label>
+
+      <label class="field">
+        <span>服务器地址</span>
+        <input id="syncEndpoint" type="url" placeholder="http://服务器 IP:8787">
+      </label>
+
+      <label class="field">
+        <span>访问令牌</span>
+        <input id="syncToken" type="password" autocomplete="off" placeholder="服务器上的 SYNC_TOKEN">
+      </label>
+
+      <p class="sync-status" id="syncStatus">未启用</p>
+
+      <div class="dialog-actions">
+        <button class="text-button" type="button" data-action="sync-now">立即同步</button>
+        <span class="dialog-spacer"></span>
+        <button class="text-button" type="button" data-action="close-sync-dialog">取消</button>
+        <button class="primary-button" type="submit">保存</button>
+      </div>
+    </form>
+  </dialog>
+
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-  <script src="app.js?v=0.1.21"></script>
+  <script src="app.js?v=0.1.22"></script>
 </body>
 </html>

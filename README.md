@@ -25,7 +25,8 @@ Tomorin New Tab is a lightweight, local-first Chrome new tab extension inspired 
 - Keeps uploaded wallpapers sharp by avoiding display blur and preserving near-4K resolution.
 - Stores shortcut data locally with `chrome.storage.local`.
 - Stores uploaded wallpaper images locally in IndexedDB.
-- Does not use an account, server, cloud sync, or wallpaper API.
+- Optional self-hosted lightweight sync for shortcut metadata.
+- Does not use an account, analytics, hosted project backend, or wallpaper API.
 
 ## Install Locally
 
@@ -45,9 +46,17 @@ Create a distributable zip:
 
 The zip file is written to `dist/`. See [docs/release.md](docs/release.md) for release and Chrome Web Store notes.
 
+## Optional Self-Hosted Sync
+
+The extension can sync shortcut metadata through a tiny self-hosted Node server. This is disabled by default and remains local-first: the new tab page renders from local storage immediately, then syncs in the background.
+
+Only lightweight metadata is synced. Uploaded wallpaper files and cached icon image files stay on each device.
+
+See [server/README.md](server/README.md) for setup.
+
 ## Local Data
 
-Shortcut metadata is saved in Chrome extension local storage. Uploaded wallpaper image data and saved shortcut icons are saved in the extension's IndexedDB database. Both are local to the current Chrome profile and are removed when the extension is removed.
+Shortcut metadata is saved in Chrome extension local storage. Uploaded wallpaper image data and saved shortcut icons are saved in the extension's IndexedDB database. Both are local to the current Chrome profile and are removed when the extension is removed. If optional sync is enabled, shortcut metadata is also sent to the user-configured sync server.
 
 See [PRIVACY.md](PRIVACY.md) for details.
 
