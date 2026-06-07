@@ -701,8 +701,8 @@ async function cacheDisplayedShortcutIcon(img) {
 
   iconCacheInFlight.add(cacheKey);
   try {
-    const { blob, width, height } = await iconSourceToBlob(sourceUrl);
-    await saveIconRecord(id, blob, sourceUrl, { width, height });
+    const blob = await iconSourceToBlob(sourceUrl);
+    await saveIconRecord(id, blob, sourceUrl);
     setActiveIconUrl(id, blob);
 
     const target = state.shortcuts.find(shortcut => shortcut.id === id);
@@ -1192,7 +1192,6 @@ async function hydrateShortcutIcons() {
     const record = await getIconRecord(id);
     if (record?.blob) setActiveIconUrl(id, record.blob);
   }));
-  if (!globalThis.__TOMORIN_DISABLE_ICON_MIGRATION) refreshLowQualityShortcutIcons();
 }
 
 async function cacheMissingShortcutIcons() {
@@ -1215,47 +1214,13 @@ async function cacheMissingShortcutIcons() {
   }
 }
 
-async function refreshLowQualityShortcutIcons() {
-  let changed = false;
-  for (const item of state.shortcuts) {
-    if (!item.iconId) continue;
-    const record = await getIconRecord(item.iconId);
-    if (!isLowQualityIconRecord(record)) continue;
-
-    const sources = iconCandidatesForUrl(item.url, item.title)
-      .filter(candidate => candidate.kind !== 'fallback' && candidate.url !== record.sourceUrl)
-      .map(candidate => candidate.url);
-    const cached = await cacheFirstAvailableIcon(item.id, sources, { minSide: 96 });
-    if (!cached) continue;
-
-    item.iconId = item.id;
-    item.iconUrl = isHttpUrl(cached.sourceUrl) ? cached.sourceUrl : '';
-    delete item.customIcon;
-    changed = true;
-  }
-
-  if (changed) {
-    await saveState();
-    render();
-  }
-}
-
-function isLowQualityIconRecord(record) {
-  if (!record?.blob) return false;
-  const minSide = Math.min(Number(record.width) || 0, Number(record.height) || 0);
-  if (minSide && minSide < 64) return true;
-  return /icons\.duckduckgo\.com|\/favicon\.ico(?:[?#]|$)|google\.com\/s2\/favicons/i.test(record.sourceUrl || '');
-}
-
-async function cacheFirstAvailableIcon(id, sourceUrls, options = {}) {
+async function cacheFirstAvailableIcon(id, sourceUrls) {
   for (const sourceUrl of sourceUrls) {
     try {
-      const { blob, width, height } = await iconSourceToBlob(sourceUrl);
-      const minSide = Math.min(width || 0, height || 0);
-      if (options.minSide && minSide && minSide < options.minSide) continue;
-      await saveIconRecord(id, blob, sourceUrl, { width, height });
+      const blob = await iconSourceToBlob(sourceUrl);
+      await saveIconRecord(id, blob, sourceUrl);
       setActiveIconUrl(id, blob);
-      return { sourceUrl, blob, width, height };
+      return { sourceUrl, blob };
     } catch {
       // Try the next candidate; favicon endpoints are often inconsistent.
     }
@@ -1264,7 +1229,7 @@ async function cacheFirstAvailableIcon(id, sourceUrls, options = {}) {
 }
 
 async function iconSourceToBlob(sourceUrl) {
-  if (isImageDataUrl(sourceUrl)) return await blobWithDimensions(dataUrlToBlob(sourceUrl));
+  if (isImageDataUrl(sourceUrl)) return dataUrlToBlob(sourceUrl);
   if (!isFetchableIconUrl(sourceUrl)) throw new Error('Unsupported icon source');
 
   const response = await fetch(sourceUrl, {
@@ -1275,30 +1240,9 @@ async function iconSourceToBlob(sourceUrl) {
 
   const blob = await response.blob();
   if (!blob.size) throw new Error('Empty icon response');
-  if (blob.type.startsWith('image/')) return await blobWithDimensions(blob);
+  if (blob.type.startsWith('image/')) return blob;
 
-  return await blobWithDimensions(new Blob([await blob.arrayBuffer()], { type: guessImageType(sourceUrl) }));
-}
-
-async function blobWithDimensions(blob) {
-  const dimensions = await imageBlobDimensions(blob).catch(() => ({ width: 0, height: 0 }));
-  return { blob, ...dimensions };
-}
-
-function imageBlobDimensions(blob) {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    const url = URL.createObjectURL(blob);
-    img.onload = () => {
-      URL.revokeObjectURL(url);
-      resolve({ width: img.naturalWidth || 0, height: img.naturalHeight || 0 });
-    };
-    img.onerror = () => {
-      URL.revokeObjectURL(url);
-      reject(new Error('Unable to inspect image dimensions'));
-    };
-    img.src = url;
-  });
+  return new Blob([await blob.arrayBuffer()], { type: guessImageType(sourceUrl) });
 }
 
 function guessImageType(url) {
@@ -1334,14 +1278,12 @@ function revokeActiveIconUrl(id) {
   activeIconUrls.delete(id);
 }
 
-async function saveIconRecord(id, blob, sourceUrl, metadata = {}) {
+async function saveIconRecord(id, blob, sourceUrl) {
   await withObjectStore(ICON_STORE, 'readwrite', (store, resolve, reject) => {
     const request = store.put({
       id,
       blob,
       sourceUrl,
-      width: metadata.width || 0,
-      height: metadata.height || 0,
       updatedAt: Date.now(),
     });
     request.onsuccess = () => resolve();
@@ -1350,15 +1292,11 @@ async function saveIconRecord(id, blob, sourceUrl, metadata = {}) {
 }
 
 async function getIconRecord(id) {
-  const record = await withObjectStore(ICON_STORE, 'readonly', (store, resolve, reject) => {
+  return await withObjectStore(ICON_STORE, 'readonly', (store, resolve, reject) => {
     const request = store.get(id);
     request.onsuccess = () => resolve(request.result || null);
     request.onerror = () => reject(request.error);
   });
-  if (!record?.blob || (Number(record.width) && Number(record.height))) return record;
-
-  const dimensions = await imageBlobDimensions(record.blob).catch(() => ({ width: 0, height: 0 }));
-  return { ...record, ...dimensions };
 }
 
 async function deleteIconRecord(id) {
