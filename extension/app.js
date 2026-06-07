@@ -85,7 +85,7 @@ async function init() {
   await applyWallpaper();
   bindEvents();
   render();
-  if (!globalThis.__TOMORIN_DISABLE_ICON_MIGRATION) cacheMissingShortcutIcons();
+  if (!globalThis.__TOMORIN_DISABLE_AUTO_ICON_CACHE) cacheMissingShortcutIcons();
 }
 
 function bindEvents() {

@@ -52,7 +52,7 @@ async function readIconRecord(page, id = 'deep-link') {
 
   const page = await browser.newPage({ viewport: { width: 2048, height: 1116 } });
   await page.addInitScript(base64 => {
-    window.__TOMORIN_DISABLE_ICON_MIGRATION = true;
+    window.__TOMORIN_DISABLE_AUTO_ICON_CACHE = true;
     const bytes = Uint8Array.from(atob(base64), char => char.charCodeAt(0));
     window.fetch = async input => {
       const url = typeof input === 'string' ? input : input.url;

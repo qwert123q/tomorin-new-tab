@@ -8,16 +8,6 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-function shortcut(index) {
-  return {
-    id: `site-${index}`,
-    title: `Site ${index}`,
-    url: `https://site-${index}.example.com`,
-    size: 'small',
-    order: index,
-  };
-}
-
 (async () => {
   const browser = await chromium.launch({
     headless: true,
@@ -26,7 +16,7 @@ function shortcut(index) {
 
   const page = await browser.newPage({ viewport: { width: 2048, height: 1116 } });
   await page.addInitScript(() => {
-    window.__TOMORIN_DISABLE_ICON_MIGRATION = true;
+    window.__TOMORIN_DISABLE_AUTO_ICON_CACHE = true;
     if (sessionStorage.getItem('__tomorinSeeded')) return;
     sessionStorage.setItem('__tomorinSeeded', '1');
     localStorage.setItem('tomorinNewTabState', JSON.stringify({
@@ -54,7 +44,7 @@ function shortcut(index) {
   assert(cardCount === 40, `first page should hold all 40 shortcuts, got ${cardCount}`);
 
   const dotCount = await page.$$eval('.page-dot', dots => dots.length);
-  assert(dotCount === 0, `pagination should disappear when 30 shortcuts fit on one page, got ${dotCount}`);
+  assert(dotCount === 0, `pagination should disappear when 40 shortcuts fit on one page, got ${dotCount}`);
 
   const metrics = await page.evaluate(() => {
     const searchBox = document.querySelector('.search-box').getBoundingClientRect();
