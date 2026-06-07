@@ -61,6 +61,9 @@ async function readIconRecord(page, id = 'deep-link') {
           <!doctype html>
           <link rel="icon" type="image/png" href="/declared-32.png">
           <link rel="apple-touch-icon" sizes="180x180" href="/declared-180.png">
+          <meta property="og:image" content="/brand-500.png">
+          <meta itemprop="image" content="/brand-300.png">
+          <img class="logo" src="/header-logo.png" alt="logo">
         `, {
           status: 200,
           headers: { 'Content-Type': 'text/html' },
@@ -129,6 +132,21 @@ async function readIconRecord(page, id = 'deep-link') {
     return [...document.querySelectorAll('[data-action="select-icon"]')]
       .some(button => button.dataset.iconUrl === 'https://www.tiktok.com/declared-180.png');
   }, null, { timeout: 1000 });
+  await page.waitForFunction(() => {
+    const urls = [...document.querySelectorAll('[data-action="select-icon"]')]
+      .map(button => button.dataset.iconUrl);
+    return urls.includes('https://www.tiktok.com/brand-500.png')
+      && urls.includes('https://www.tiktok.com/brand-300.png')
+      && urls.includes('https://www.tiktok.com/header-logo.png');
+  }, null, { timeout: 1000 });
+
+  const candidateBeforeError = await page.$$eval('[data-action="select-icon"]', buttons => buttons.length);
+  await page.$eval('[data-action="select-icon"] img', img => img.dispatchEvent(new Event('error', { bubbles: true })));
+  const candidateAfterError = await page.$$eval('[data-action="select-icon"]', buttons => buttons.length);
+  assert(
+    candidateAfterError === candidateBeforeError - 1,
+    `broken icon candidates should be removed, got ${candidateBeforeError} -> ${candidateAfterError}`,
+  );
 
   await page.click('[data-icon-kind="duckduckgo"]');
   await page.click('button[type="submit"]');

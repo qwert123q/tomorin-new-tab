@@ -95,6 +95,7 @@ function bindEvents() {
   els.wallpaperInput.addEventListener('change', handleWallpaperUpload);
   els.importInput.addEventListener('change', handleInfinityImport);
   els.iconInput.addEventListener('change', handleShortcutIconUpload);
+  els.iconCandidates.addEventListener('error', handleIconCandidateError, true);
   els.urlInput.addEventListener('input', () => {
     if (!pendingCustomIcon) {
       pendingIconUrl = '';
@@ -706,7 +707,10 @@ async function discoverPageIconCandidates(url) {
 
   const html = await response.text();
   const document = new DOMParser().parseFromString(html, 'text/html');
-  const candidates = declaredIconCandidatesFromDocument(document, response.url || pageUrl);
+  const candidates = [
+    ...declaredIconCandidatesFromDocument(document, response.url || pageUrl),
+    ...brandIconCandidatesFromDocument(document, response.url || pageUrl),
+  ];
   const manifestUrls = [...document.querySelectorAll('link[rel]')]
     .filter(link => relValues(link.rel).includes('manifest'))
     .map(link => absoluteIconUrl(link.getAttribute('href'), response.url || pageUrl))
@@ -740,6 +744,34 @@ function declaredIconCandidatesFromDocument(document, baseUrl) {
       const maskWeight = rels.includes('mask-icon') ? -500 : 0;
       return [{ kind: 'page-icon', url, score: 1000 + appleWeight + maskWeight + size }];
     });
+}
+
+function brandIconCandidatesFromDocument(document, baseUrl) {
+  const metaCandidates = [...document.querySelectorAll('meta[content]')]
+    .flatMap(meta => {
+      const key = `${meta.getAttribute('property') || ''} ${meta.getAttribute('name') || ''} ${meta.getAttribute('itemprop') || ''}`.toLowerCase();
+      const isBrandImage = /\bog:image(?::url)?\b|twitter:image|(^|\s)image($|\s)|msapplication-tileimage/.test(key);
+      if (!isBrandImage) return [];
+
+      const url = absoluteIconUrl(meta.getAttribute('content'), baseUrl);
+      if (!url) return [];
+      return [{ kind: 'brand-image', url, score: 3600 + largestDeclaredIconSize('', url) }];
+    });
+
+  const logoCandidates = [...document.querySelectorAll('img[src]')]
+    .filter(img => {
+      const marker = `${img.getAttribute('alt') || ''} ${img.getAttribute('class') || ''} ${img.getAttribute('id') || ''} ${img.getAttribute('src') || ''}`.toLowerCase();
+      return /\blogo\b|brand|favicon|app-icon/.test(marker);
+    })
+    .slice(0, 6)
+    .flatMap(img => {
+      const url = absoluteIconUrl(img.getAttribute('src'), baseUrl);
+      if (!url) return [];
+      const declaredSize = Math.max(Number(img.getAttribute('width')) || 0, Number(img.getAttribute('height')) || 0);
+      return [{ kind: 'brand-logo', url, score: 3000 + Math.max(declaredSize, largestDeclaredIconSize('', url)) }];
+    });
+
+  return [...metaCandidates, ...logoCandidates];
 }
 
 async function declaredIconCandidatesFromManifest(manifestUrl) {
@@ -795,7 +827,25 @@ function largestDeclaredIconSize(sizes, url = '') {
     });
   const fromName = [...String(url).matchAll(/(?:^|[_-])(\d{2,4})x(\d{2,4})(?=[_.-])/gi)]
     .map(match => Math.max(Number(match[1]), Number(match[2])));
-  return Math.max(0, ...declared, ...fromName);
+  const singleSizeFromName = [...String(url).matchAll(/(?:^|[_-])(\d{2,4})(?=[_.-])/gi)]
+    .map(match => Number(match[1]));
+  return Math.max(0, ...declared, ...fromName, ...singleSizeFromName);
+}
+
+function handleIconCandidateError(event) {
+  const img = event.target;
+  if (!(img instanceof HTMLImageElement)) return;
+
+  const button = img.closest('[data-action="select-icon"]');
+  if (!button || !els.iconCandidates.contains(button)) return;
+
+  if (pendingIconUrl === button.dataset.iconUrl) {
+    pendingIconUrl = '';
+    renderIconPreview();
+    return;
+  }
+
+  button.remove();
 }
 
 function handleShortcutIconError(event) {
