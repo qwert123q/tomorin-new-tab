@@ -1,6 +1,8 @@
 # Tomorin New Tab
 
-A lightweight Chrome new tab extension inspired by Infinity New Tab.
+English | [简体中文](README.zh-CN.md)
+
+Tomorin New Tab is a lightweight, local-first Chrome new tab extension inspired by Infinity New Tab.
 
 ## Features
 
@@ -11,7 +13,7 @@ A lightweight Chrome new tab extension inspired by Infinity New Tab.
 - Starts with a small generic shortcut set.
 - Adds, edits, deletes, resizes, and reorders shortcuts from the page.
 - Opens shortcut editing directly from a right-click.
-- Switches global icon density between 小 / 中 / 大.
+- Switches global icon density between small, medium, and large.
 - Keeps controls tucked behind a hover/focus gear menu.
 - Imports website shortcuts from an Infinity New Tab backup JSON.
 - Uses a high-resolution favicon fallback chain to show website icons automatically.
@@ -25,7 +27,7 @@ A lightweight Chrome new tab extension inspired by Infinity New Tab.
 - Stores uploaded wallpaper images locally in IndexedDB.
 - Does not use an account, server, cloud sync, or wallpaper API.
 
-## Load In Chrome
+## Install Locally
 
 1. Open `chrome://extensions`.
 2. Enable **Developer mode**.
@@ -33,6 +35,22 @@ A lightweight Chrome new tab extension inspired by Infinity New Tab.
 4. Select the repository's `extension/` folder.
 5. Open a new tab.
 
+## Package
+
+Create a distributable zip:
+
+```bash
+./scripts/package-extension.sh
+```
+
+The zip file is written to `dist/`. See [docs/release.md](docs/release.md) for release and Chrome Web Store notes.
+
 ## Local Data
 
-Shortcut metadata is saved in Chrome extension local storage. Uploaded wallpaper image data is saved in the extension's IndexedDB database. Both are local to the current Chrome profile and are removed when the extension is removed.
+Shortcut metadata is saved in Chrome extension local storage. Uploaded wallpaper image data and saved shortcut icons are saved in the extension's IndexedDB database. Both are local to the current Chrome profile and are removed when the extension is removed.
+
+See [PRIVACY.md](PRIVACY.md) for details.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
