@@ -180,11 +180,16 @@ button {
   background: rgba(255, 255, 255, 0.14);
 }
 
+.shortcut-slot.add-slot {
+  place-items: start center;
+}
+
 .add-shortcut-tile {
   display: grid;
   place-items: center;
   width: 42px;
   height: 42px;
+  margin-top: 3px;
   border: 2px dashed rgba(255, 255, 255, 0.68);
   border-radius: 14px;
   color: rgba(255, 255, 255, 0.92);

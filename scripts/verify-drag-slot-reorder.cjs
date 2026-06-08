@@ -58,6 +58,39 @@ async function dragToSlot(page, sourceId, slotIndex) {
   const slotCount = await page.$$eval('.shortcut-slot', slots => slots.length);
   assert(slotCount === 32, `edit mode should render 32 drop slots, got ${slotCount}`);
 
+  await page.evaluate(() => {
+    document.querySelector('.newtab-shell').dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaX: 120, deltaY: 0 }));
+  });
+  await page.waitForFunction(() => document.querySelector('.page-dot.active')?.dataset.page === '1');
+  await page.evaluate(() => {
+    document.querySelector('.newtab-shell').dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaX: -120, deltaY: 0 }));
+  });
+  await page.waitForFunction(() => document.querySelector('.page-dot.active')?.dataset.page === '0');
+  await page.evaluate(() => {
+    const shell = document.querySelector('.newtab-shell');
+    shell.dispatchEvent(new TouchEvent('touchstart', {
+      bubbles: true,
+      changedTouches: [new Touch({ identifier: 1, target: shell, clientX: 420, clientY: 240 })],
+    }));
+    shell.dispatchEvent(new TouchEvent('touchend', {
+      bubbles: true,
+      changedTouches: [new Touch({ identifier: 1, target: shell, clientX: 220, clientY: 240 })],
+    }));
+  });
+  await page.waitForFunction(() => document.querySelector('.page-dot.active')?.dataset.page === '1');
+  await page.evaluate(() => {
+    const shell = document.querySelector('.newtab-shell');
+    shell.dispatchEvent(new TouchEvent('touchstart', {
+      bubbles: true,
+      changedTouches: [new Touch({ identifier: 2, target: shell, clientX: 220, clientY: 240 })],
+    }));
+    shell.dispatchEvent(new TouchEvent('touchend', {
+      bubbles: true,
+      changedTouches: [new Touch({ identifier: 2, target: shell, clientX: 420, clientY: 240 })],
+    }));
+  });
+  await page.waitForFunction(() => document.querySelector('.page-dot.active')?.dataset.page === '0');
+
   await dragToSlot(page, 'site-0', 5);
   await page.waitForFunction(() => {
     const state = JSON.parse(localStorage.getItem('tomorinNewTabState'));

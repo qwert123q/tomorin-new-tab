@@ -140,9 +140,9 @@ function bindEvents() {
   els.shortcutPage.addEventListener('drop', handleDrop);
   els.shortcutPage.addEventListener('dragend', handleDragEnd);
   els.shortcutPage.addEventListener('contextmenu', handleShortcutContextMenu);
-  els.shortcutPage.addEventListener('wheel', handleShortcutWheel, { passive: true });
-  els.shortcutPage.addEventListener('touchstart', handleTouchStart, { passive: true });
-  els.shortcutPage.addEventListener('touchend', handleTouchEnd, { passive: true });
+  els.shell.addEventListener('wheel', handleShortcutWheel, { passive: true });
+  els.shell.addEventListener('touchstart', handleTouchStart, { passive: true });
+  els.shell.addEventListener('touchend', handleTouchEnd, { passive: true });
 }
 
 async function loadState() {
@@ -1197,20 +1197,29 @@ function handleKeydown(event) {
 }
 
 function handleShortcutWheel(event) {
+  if (shouldIgnorePageGesture(event)) return;
   if (Math.abs(event.deltaX) <= Math.abs(event.deltaY)) return;
   if (event.deltaX > 20) goToPage(state.settings.currentPage + 1);
   if (event.deltaX < -20) goToPage(state.settings.currentPage - 1);
 }
 
 function handleTouchStart(event) {
+  if (shouldIgnorePageGesture(event)) return;
   touchStartX = event.changedTouches[0]?.clientX || 0;
 }
 
 function handleTouchEnd(event) {
+  if (shouldIgnorePageGesture(event)) return;
   const endX = event.changedTouches[0]?.clientX || 0;
   const delta = endX - touchStartX;
   if (Math.abs(delta) < 60) return;
   goToPage(state.settings.currentPage + (delta < 0 ? 1 : -1));
+}
+
+function shouldIgnorePageGesture(event) {
+  return els.dialog.open
+    || els.syncDialog.open
+    || Boolean(event.target.closest('.settings-menu, input, textarea, select'));
 }
 
 function handleDragStart(event) {

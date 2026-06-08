@@ -92,6 +92,19 @@ function assert(condition, message) {
   assert(editMarkerState.transparent, 'edit markers should be transparent without a button-like background');
   assert(editMarkerState.text === '✎', `edit marker should use a small edit icon, got ${editMarkerState.text}`);
 
+  const addAlignment = await page.evaluate(() => {
+    const lastIcon = document.querySelector('[data-id="site-5"] .shortcut-icon').getBoundingClientRect();
+    const addTile = document.querySelector('[data-action="add-shortcut"]').getBoundingClientRect();
+    return {
+      iconCenterY: lastIcon.top + lastIcon.height / 2,
+      addCenterY: addTile.top + addTile.height / 2,
+    };
+  });
+  assert(
+    Math.abs(addAlignment.iconCenterY - addAlignment.addCenterY) <= 0.5,
+    `add shortcut tile should align with shortcut icons, got ${JSON.stringify(addAlignment)}`,
+  );
+
   await page.addStyleTag({ content: '.edit-mode .shortcut-card .shortcut-icon { animation: none !important; transform: none !important; }' });
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   const editShortcutGeometry = await page.$$eval('.shortcut-card', cards => cards.map(card => {
