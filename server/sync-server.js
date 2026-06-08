@@ -6,6 +6,7 @@ const http = require('http');
 const path = require('path');
 
 const PORT = Number(process.env.SYNC_PORT || 8787);
+const HOST = process.env.SYNC_HOST || '0.0.0.0';
 const TOKEN = process.env.SYNC_TOKEN || '';
 const DATA_FILE = process.env.SYNC_DATA_FILE || path.join(__dirname, 'data', 'state.json');
 const MAX_BODY_BYTES = 256 * 1024;
@@ -66,8 +67,8 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`Tomorin New Tab sync server listening on :${PORT}`);
+server.listen(PORT, HOST, () => {
+  console.log(`Tomorin New Tab sync server listening on ${HOST}:${PORT}`);
 });
 
 function setCorsHeaders(res) {

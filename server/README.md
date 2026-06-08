@@ -14,6 +14,7 @@ It does not store wallpaper image files or shortcut icon image files.
 
 ```bash
 export SYNC_TOKEN="change-me"
+export SYNC_HOST=127.0.0.1
 export SYNC_PORT=8787
 export SYNC_DATA_FILE="$HOME/tomorin-new-tab-sync/data/state.json"
 node server/sync-server.js
@@ -25,13 +26,13 @@ Health check:
 curl http://127.0.0.1:8787/health
 ```
 
-If the extension cannot reach the server from another device, make sure the server firewall and cloud provider security group allow inbound TCP traffic on `SYNC_PORT`.
+For direct IP testing, set `SYNC_HOST=0.0.0.0` and make sure the server firewall and cloud provider security group allow inbound TCP traffic on `SYNC_PORT`. For a domain setup, keep the sync server on `127.0.0.1` and expose it through an HTTPS reverse proxy such as Nginx.
 
 ## Chrome Extension
 
 Open the new tab page, hover the gear, click the sync button, then enter:
 
-- server URL, for example `http://YOUR_SERVER_IP:8787`
+- server URL, for example `https://sync.example.com`
 - the same `SYNC_TOKEN`
 
 The extension renders local data first and syncs in the background. Startup sync is rate-limited, and failed sync attempts leave local usage unaffected.
