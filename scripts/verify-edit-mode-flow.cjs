@@ -63,12 +63,17 @@ function assert(condition, message) {
       count: markers.length,
       visibleCount: markers.filter(marker => getComputedStyle(marker).opacity === '1').length,
       pointerSafe: markers.every(marker => getComputedStyle(marker).pointerEvents === 'none'),
+      transparent: markers.every(marker => {
+        const style = getComputedStyle(marker);
+        return style.backgroundColor === 'rgba(0, 0, 0, 0)' && style.boxShadow === 'none';
+      }),
       text: markers[0]?.textContent.trim(),
     };
   });
   assert(editMarkerState.count === 6, `edit mode should render one marker per shortcut, got ${editMarkerState.count}`);
   assert(editMarkerState.visibleCount === 6, `edit markers should be visible in edit mode, got ${editMarkerState.visibleCount}`);
   assert(editMarkerState.pointerSafe, 'edit markers should not intercept shortcut pointer events');
+  assert(editMarkerState.transparent, 'edit markers should be transparent without a button-like background');
   assert(editMarkerState.text === '✎', `edit marker should use a small edit icon, got ${editMarkerState.text}`);
 
   await page.click('[data-action="close-dialog"]');
