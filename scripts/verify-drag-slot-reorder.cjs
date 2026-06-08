@@ -53,7 +53,6 @@ async function dragToSlot(page, sourceId, slotIndex) {
 
   await page.goto(pageUrl, { waitUntil: 'domcontentloaded' });
   await page.click('[data-id="site-0"]', { button: 'right' });
-  await page.click('[data-action="close-dialog"]');
   await page.waitForSelector('[data-slot-index="31"]');
 
   const slotCount = await page.$$eval('.shortcut-slot', slots => slots.length);

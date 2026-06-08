@@ -94,9 +94,13 @@ function assert(condition, message) {
 
   await page.click('.shortcut-card:nth-child(1)', { button: 'right' });
   const dialogOpen = await page.$eval('#shortcutDialog', dialog => dialog.open);
+  const editMode = await page.$eval('.newtab-shell', shell => shell.classList.contains('edit-mode'));
+  assert(editMode, 'right-clicking a shortcut should enter global edit mode');
+  assert(!dialogOpen, 'right-clicking a shortcut should not open the edit dialog immediately');
+  await page.click('[data-id="site-0"]');
+  await page.waitForFunction(() => document.querySelector('#shortcutDialog').open);
   const editedTitle = await page.$eval('#shortcutTitle', input => input.value);
-  assert(dialogOpen, 'right-clicking a shortcut should open the edit dialog');
-  assert(editedTitle === 'Site 0', `right-click edit should load the clicked shortcut, got ${editedTitle}`);
+  assert(editedTitle === 'Site 0', `clicking a shortcut in edit mode should load it for editing, got ${editedTitle}`);
 
   console.log(JSON.stringify({ cardCount, dotCount, metrics }, null, 2));
 

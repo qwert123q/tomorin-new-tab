@@ -126,6 +126,7 @@ async function countIconRecords(page) {
   await installSeedState(page);
   await page.goto(pageUrl, { waitUntil: 'domcontentloaded' });
   await page.click('.shortcut-card', { button: 'right' });
+  await page.click('.shortcut-card');
   await page.click('[data-icon-kind="apple-touch"]');
   await page.click('button[type="submit"]');
 
@@ -146,6 +147,7 @@ async function countIconRecords(page) {
   assert(srcAfterReload.startsWith('blob:'), `should render saved shortcut icon from local blob, got ${srcAfterReload}`);
 
   await page.click('.shortcut-card', { button: 'right' });
+  await page.click('.shortcut-card');
   await page.setInputFiles('#shortcutIconInput', {
     name: 'custom-icon.png',
     mimeType: 'image/png',

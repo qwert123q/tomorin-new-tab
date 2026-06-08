@@ -124,6 +124,7 @@ async function readIconRecord(page, id = 'deep-link') {
   assert(fallbackSrc.includes('icons.duckduckgo.com/ip3/tiktok.com.ico'), 'should fallback to DuckDuckGo favicon');
 
   await page.click('.shortcut-card', { button: 'right' });
+  await page.click('.shortcut-card');
   const candidateCount = await page.$$eval('[data-action="select-icon"]', buttons => buttons.length);
   assert(candidateCount >= 4, `should render icon candidates, got ${candidateCount}`);
   await page.waitForFunction(() => {

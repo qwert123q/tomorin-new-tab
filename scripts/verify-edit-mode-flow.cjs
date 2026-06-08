@@ -69,8 +69,7 @@ function assert(condition, message) {
     slotCount: document.querySelectorAll('.shortcut-slot').length,
     addSlotIndex: document.querySelector('[data-action="add-shortcut"]')?.closest('.shortcut-slot')?.dataset.slotIndex,
   }));
-  assert(rightClickState.dialogOpen, 'right-clicking a shortcut should open the edit dialog');
-  assert(rightClickState.title === 'Site 0', `right-click edit should load clicked shortcut, got ${rightClickState.title}`);
+  assert(!rightClickState.dialogOpen, 'right-clicking a shortcut should enter global edit mode without opening an item dialog');
   assert(rightClickState.slotCount === 32, `global edit mode should render 32 slots, got ${rightClickState.slotCount}`);
   assert(rightClickState.addSlotIndex === '6', `add button should appear after the last shortcut at slot 6, got ${rightClickState.addSlotIndex}`);
 
@@ -93,9 +92,8 @@ function assert(condition, message) {
   assert(editMarkerState.transparent, 'edit markers should be transparent without a button-like background');
   assert(editMarkerState.text === '✎', `edit marker should use a small edit icon, got ${editMarkerState.text}`);
 
-  await page.click('[data-action="close-dialog"]');
-  await page.waitForFunction(() => !document.querySelector('#shortcutDialog').open);
-  await page.addStyleTag({ content: '.edit-mode .shortcut-card .shortcut-icon { animation: none !important; }' });
+  await page.addStyleTag({ content: '.edit-mode .shortcut-card .shortcut-icon { animation: none !important; transform: none !important; }' });
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   const editShortcutGeometry = await page.$$eval('.shortcut-card', cards => cards.map(card => {
     const icon = card.querySelector('.shortcut-icon');
     const title = card.querySelector('.shortcut-title');
@@ -131,6 +129,13 @@ function assert(condition, message) {
   assert(wiggleStart !== -1 && wiggleEnd !== -1, 'shortcut wiggle keyframes should exist');
   assert(!wiggleRule.includes('translate'), 'shortcut wiggle animation should not translate icons away from their normal center');
 
+  await page.click('[data-id="site-0"]');
+  await page.waitForFunction(() => document.querySelector('#shortcutDialog').open);
+  const selectedTitle = await page.$eval('#shortcutTitle', node => node.value);
+  assert(selectedTitle === 'Site 0', `clicking a shortcut in edit mode should choose it for editing, got ${selectedTitle}`);
+  await page.click('[data-action="close-dialog"]');
+  await page.waitForFunction(() => !document.querySelector('#shortcutDialog').open);
+
   await page.click('[data-action="add-shortcut"]');
   await page.waitForFunction(() => document.querySelector('#shortcutDialog').open);
   const addTitle = await page.$eval('#dialogTitle', node => node.textContent.trim());
@@ -150,13 +155,11 @@ function assert(condition, message) {
   assert(hiddenEditMarkers, 'edit markers should be hidden after exiting edit mode');
 
   await page.click('[data-id="site-1"]', { button: 'right' });
-  await page.click('[data-action="close-dialog"]');
   await page.waitForFunction(() => document.querySelector('.newtab-shell')?.classList.contains('edit-mode'));
   await page.click('[data-slot-index="7"]');
   await page.waitForFunction(() => !document.querySelector('.newtab-shell')?.classList.contains('edit-mode'));
 
   await page.click('[data-id="site-1"]', { button: 'right' });
-  await page.click('[data-action="close-dialog"]');
   await page.waitForFunction(() => document.querySelector('.newtab-shell')?.classList.contains('edit-mode'));
   await page.mouse.click(40, 40);
   await page.waitForFunction(() => !document.querySelector('.newtab-shell')?.classList.contains('edit-mode'));

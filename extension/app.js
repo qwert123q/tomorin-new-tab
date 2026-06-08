@@ -333,7 +333,6 @@ function handleShortcutContextMenu(event) {
   if (!card || event.target.closest('[data-action]')) return;
   event.preventDefault();
   enterEditMode();
-  openShortcutDialog(card.dataset.id);
 }
 
 function renderShortcut(item) {
