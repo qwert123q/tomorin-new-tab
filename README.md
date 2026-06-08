@@ -19,7 +19,6 @@ Tomorin New Tab is a lightweight, local-first Chrome new tab extension inspired 
 - Opens shortcut editing directly from a right-click.
 - Switches global icon density between small, medium, and large.
 - Keeps controls tucked behind a hover/focus gear menu.
-- Imports website shortcuts from an Infinity New Tab backup JSON.
 - Uses a high-resolution favicon fallback chain to show website icons automatically.
 - Shows selectable icon candidates while editing a shortcut.
 - Supports per-shortcut custom icon uploads for sites that cannot be resolved automatically.

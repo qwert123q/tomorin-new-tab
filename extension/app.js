@@ -61,7 +61,6 @@ const els = {
   toolbar: document.querySelector('.toolbar'),
   densityButtons: [...document.querySelectorAll('[data-action="set-density"]')],
   wallpaperInput: document.getElementById('wallpaperInput'),
-  importInput: document.getElementById('importInput'),
   syncDialog: document.getElementById('syncDialog'),
   syncForm: document.getElementById('syncForm'),
   syncEnabled: document.getElementById('syncEnabled'),
@@ -119,7 +118,6 @@ function bindEvents() {
   els.shortcutForm.addEventListener('submit', handleShortcutSubmit);
   els.syncForm.addEventListener('submit', handleSyncSubmit);
   els.wallpaperInput.addEventListener('change', handleWallpaperUpload);
-  els.importInput.addEventListener('change', handleInfinityImport);
   els.iconInput.addEventListener('change', handleShortcutIconUpload);
   els.iconCandidates.addEventListener('error', handleIconCandidateError, true);
   els.urlInput.addEventListener('input', () => {
@@ -241,16 +239,20 @@ function orderedShortcuts() {
 }
 
 function pageCount() {
-  return Math.max(1, Math.ceil(state.shortcuts.length / PAGE_CAPACITY));
+  return Math.max(1, Math.ceil(pageItemCount() / PAGE_CAPACITY));
 }
 
 function clampPage(page) {
-  return clampPageForCount(page, state.shortcuts.length);
+  return clampPageForCount(page, pageItemCount());
 }
 
 function clampPageForCount(page, shortcutCount) {
   const count = Math.max(1, Math.ceil(shortcutCount / PAGE_CAPACITY));
   return Math.max(0, Math.min(page, count - 1));
+}
+
+function pageItemCount() {
+  return state.shortcuts.length + (editMode ? 1 : 0);
 }
 
 function currentPageItems() {
@@ -305,6 +307,10 @@ function renderShortcutSlots(items) {
 }
 
 function renderShortcutSlot(item, globalIndex, slotIndex) {
+  if (!item && globalIndex === state.shortcuts.length) {
+    return renderAddShortcutSlot(globalIndex, slotIndex);
+  }
+
   const size = item ? ` ${item.size}` : '';
   const empty = item ? '' : ' empty';
   return `
@@ -314,10 +320,19 @@ function renderShortcutSlot(item, globalIndex, slotIndex) {
   `;
 }
 
+function renderAddShortcutSlot(globalIndex, slotIndex) {
+  return `
+    <div class="shortcut-slot add-slot" data-global-index="${globalIndex}" data-slot-index="${slotIndex}">
+      <button class="add-shortcut-tile" type="button" data-action="add-shortcut" title="添加网站" aria-label="添加网站">+</button>
+    </div>
+  `;
+}
+
 function handleShortcutContextMenu(event) {
   const card = event.target.closest('.shortcut-card');
   if (!card || event.target.closest('[data-action]')) return;
   event.preventDefault();
+  enterEditMode();
   openShortcutDialog(card.dataset.id);
 }
 
@@ -335,7 +350,6 @@ function renderShortcut(item) {
         <img src="${favicon}" alt="" loading="lazy" data-fallbacks="${fallbacks}" data-fallback-index="0">
       </span>
       <span class="shortcut-title">${title}</span>
-      <button class="edit-chip" type="button" data-action="edit-shortcut" data-id="${item.id}" title="编辑 ${title}">✎</button>
     </div>
   `;
 }
@@ -483,37 +497,28 @@ function siteOrigin(url) {
 
 async function handleDocumentClick(event) {
   const card = event.target.closest('.shortcut-card');
-  if (editMode && card && !event.target.closest('[data-action]')) {
+  const actionTarget = event.target.closest('[data-action]');
+
+  if (editMode && card && !actionTarget) {
     event.preventDefault();
     openShortcutDialog(card.dataset.id);
     return;
   }
 
-  if (!editMode && card && !event.target.closest('[data-action]')) {
+  if (!editMode && card && !actionTarget) {
     window.location.href = card.dataset.url;
     return;
   }
 
-  const actionTarget = event.target.closest('[data-action]');
-  if (!actionTarget) return;
+  if (!actionTarget) {
+    if (editMode && shouldExitEditModeForClick(event)) exitEditMode();
+    return;
+  }
 
   const { action } = actionTarget.dataset;
-  if (action === 'toggle-edit') {
-    editMode = !editMode;
-    actionTarget.classList.toggle('active', editMode);
-    showToast(editMode ? '进入编辑模式' : '退出编辑模式');
-    render();
-    return;
-  }
-
   if (action === 'add-shortcut') {
+    if (editMode) event.preventDefault();
     openShortcutDialog();
-    return;
-  }
-
-  if (action === 'edit-shortcut') {
-    event.preventDefault();
-    openShortcutDialog(actionTarget.dataset.id);
     return;
   }
 
@@ -572,6 +577,29 @@ async function handleDocumentClick(event) {
   if (action === 'reset-wallpaper') {
     await resetWallpaper();
   }
+}
+
+function shouldExitEditModeForClick(event) {
+  return !els.dialog.open
+    && !els.syncDialog.open
+    && !event.target.closest('.settings-menu')
+    && !event.target.closest('.shortcut-dialog');
+}
+
+function enterEditMode() {
+  if (editMode) return;
+  editMode = true;
+  showToast('进入编辑模式');
+  render();
+}
+
+function exitEditMode() {
+  if (!editMode) return;
+  editMode = false;
+  draggedId = null;
+  setActiveDropSlot(null);
+  showToast('退出编辑模式');
+  render();
 }
 
 async function setDensity(density) {
@@ -1146,7 +1174,18 @@ async function goToPage(page) {
 }
 
 function handleKeydown(event) {
-  if (event.key === 'Escape' && els.dialog.open) closeShortcutDialog();
+  if (event.key === 'Escape' && els.dialog.open) {
+    closeShortcutDialog();
+    return;
+  }
+  if (event.key === 'Escape' && els.syncDialog.open) {
+    closeSyncDialog();
+    return;
+  }
+  if (event.key === 'Escape' && editMode) {
+    exitEditMode();
+    return;
+  }
   if (event.key === 'ArrowLeft' && !els.dialog.open) goToPage(state.settings.currentPage - 1);
   if (event.key === 'ArrowRight' && !els.dialog.open) goToPage(state.settings.currentPage + 1);
 
@@ -1253,132 +1292,6 @@ async function handleWallpaperUpload(event) {
   } catch {
     showToast('壁纸处理失败');
   }
-}
-
-async function handleInfinityImport(event) {
-  const file = event.target.files?.[0];
-  event.target.value = '';
-  if (!file) return;
-
-  try {
-    const raw = await file.text();
-    const payload = parseJsonLike(raw);
-    const imported = extractInfinityShortcuts(payload);
-    if (!imported.length) {
-      showToast('没有找到可导入的网站');
-      return;
-    }
-
-    const existingUrls = new Set(state.shortcuts.map(item => shortcutUrlKey(item.url)));
-    const additions = imported.filter(item => {
-      const key = shortcutUrlKey(item.url);
-      if (!key || existingUrls.has(key)) return false;
-      existingUrls.add(key);
-      return true;
-    });
-
-    if (!additions.length) {
-      showToast('这些网站已在列表中');
-      return;
-    }
-
-    state.shortcuts.push(...additions.map((item, index) => ({
-      id: crypto.randomUUID(),
-      title: item.title,
-      url: item.url,
-      size: 'small',
-      order: state.shortcuts.length + index,
-      updatedAt: Date.now(),
-    })));
-    state.settings.currentPage = pageCount() - 1;
-    await saveState();
-    render();
-    showToast(`已导入 ${additions.length} 个网站`);
-  } catch {
-    showToast('导入失败，请选择 Infinity 备份 JSON');
-  }
-}
-
-function parseJsonLike(value) {
-  if (typeof value !== 'string') return value;
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  return JSON.parse(trimmed);
-}
-
-function extractInfinityShortcuts(payload) {
-  const candidates = [];
-  const seenObjects = new WeakSet();
-
-  function visit(value, path = '') {
-    const parsed = parseNestedJson(value);
-    if (parsed !== value) {
-      visit(parsed, path);
-      return;
-    }
-
-    if (!value || typeof value !== 'object') return;
-    if (seenObjects.has(value)) return;
-    seenObjects.add(value);
-
-    if (Array.isArray(value)) {
-      value.forEach((item, index) => visit(item, `${path}[${index}]`));
-      return;
-    }
-
-    addShortcutCandidate(value, path, candidates);
-    Object.entries(value).forEach(([key, child]) => visit(child, path ? `${path}.${key}` : key));
-  }
-
-  visit(payload);
-
-  const byUrl = new Map();
-  candidates.forEach(item => {
-    const key = shortcutUrlKey(item.url);
-    if (!key || byUrl.has(key)) return;
-    byUrl.set(key, item);
-  });
-  return [...byUrl.values()];
-}
-
-function parseNestedJson(value) {
-  if (typeof value !== 'string') return value;
-  const trimmed = value.trim();
-  if (!trimmed || !/^[{[]/.test(trimmed)) return value;
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    return value;
-  }
-}
-
-function addShortcutCandidate(item, path, candidates) {
-  const rawUrl = item.target || item.url || item.href || item.link;
-  if (typeof rawUrl !== 'string' || !rawUrl.trim()) return;
-  if (/^(infinity|chrome|data|javascript):/i.test(rawUrl.trim())) return;
-
-  const url = normalizeUrl(rawUrl);
-  if (!/^https?:\/\//i.test(url)) return;
-
-  const title = cleanShortcutTitle(
-    item.name || item.title || item.bgText || item.text || hostnameFromUrl(url)
-  );
-  if (!title) return;
-
-  const score = shortcutCandidateScore(item, path);
-  if (score < 2) return;
-
-  candidates.push({ title, url, score });
-}
-
-function shortcutCandidateScore(item, path) {
-  let score = 0;
-  if (typeof item.name === 'string' || typeof item.title === 'string') score += 1;
-  if (typeof item.target === 'string') score += 2;
-  if (typeof item.url === 'string') score += 1;
-  if ('bgImage' in item || 'bgColor' in item || 'src' in item || 'showText' in item) score += 1;
-  if (/store-site|infinity-icons|sites|icons/i.test(path)) score += 2;
-  return score;
 }
 
 function cleanShortcutTitle(value) {
