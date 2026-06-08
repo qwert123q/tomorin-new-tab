@@ -7,6 +7,7 @@ const WALLPAPER_STORE = 'wallpapers';
 const ICON_STORE = 'icons';
 const WALLPAPER_ID = 'current';
 const PAGE_CAPACITY = 32;
+const PAGE_SWITCH_DELAY_MS = 45;
 const SYNC_SCHEMA_VERSION = 1;
 const SYNC_STARTUP_MIN_INTERVAL_MS = 5 * 60 * 1000;
 const SYNC_REQUEST_TIMEOUT_MS = 3500;
@@ -1166,7 +1167,7 @@ async function goToPage(page) {
   const nextPage = clampPage(page);
   if (nextPage === state.settings.currentPage) return;
   els.shortcutPage.classList.add('switching');
-  await sleep(120);
+  await sleep(PAGE_SWITCH_DELAY_MS);
   state.settings.currentPage = nextPage;
   await saveState({ sync: false });
   render();

@@ -130,7 +130,7 @@ button {
   align-content: start;
   gap: 4px 38px;
   min-height: 406px;
-  transition: opacity 160ms ease, transform 160ms ease;
+  transition: opacity 90ms ease, transform 90ms ease;
 }
 
 .shortcut-page.switching {

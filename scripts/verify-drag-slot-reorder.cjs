@@ -61,11 +61,11 @@ async function dragToSlot(page, sourceId, slotIndex) {
   await page.evaluate(() => {
     document.querySelector('.newtab-shell').dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaX: 120, deltaY: 0 }));
   });
-  await page.waitForFunction(() => document.querySelector('.page-dot.active')?.dataset.page === '1');
+  await page.waitForFunction(() => document.querySelector('.page-dot.active')?.dataset.page === '1', null, { timeout: 100 });
   await page.evaluate(() => {
     document.querySelector('.newtab-shell').dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaX: -120, deltaY: 0 }));
   });
-  await page.waitForFunction(() => document.querySelector('.page-dot.active')?.dataset.page === '0');
+  await page.waitForFunction(() => document.querySelector('.page-dot.active')?.dataset.page === '0', null, { timeout: 100 });
   await page.evaluate(() => {
     const shell = document.querySelector('.newtab-shell');
     shell.dispatchEvent(new TouchEvent('touchstart', {
@@ -77,7 +77,7 @@ async function dragToSlot(page, sourceId, slotIndex) {
       changedTouches: [new Touch({ identifier: 1, target: shell, clientX: 220, clientY: 240 })],
     }));
   });
-  await page.waitForFunction(() => document.querySelector('.page-dot.active')?.dataset.page === '1');
+  await page.waitForFunction(() => document.querySelector('.page-dot.active')?.dataset.page === '1', null, { timeout: 100 });
   await page.evaluate(() => {
     const shell = document.querySelector('.newtab-shell');
     shell.dispatchEvent(new TouchEvent('touchstart', {
@@ -89,7 +89,7 @@ async function dragToSlot(page, sourceId, slotIndex) {
       changedTouches: [new Touch({ identifier: 2, target: shell, clientX: 420, clientY: 240 })],
     }));
   });
-  await page.waitForFunction(() => document.querySelector('.page-dot.active')?.dataset.page === '0');
+  await page.waitForFunction(() => document.querySelector('.page-dot.active')?.dataset.page === '0', null, { timeout: 100 });
 
   await dragToSlot(page, 'site-0', 5);
   await page.waitForFunction(() => {
