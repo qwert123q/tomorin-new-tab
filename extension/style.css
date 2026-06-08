@@ -120,9 +120,11 @@ button {
 .shortcut-area {
   position: relative;
   min-height: 0;
+  overflow: hidden;
 }
 
-.shortcut-page {
+.shortcut-page,
+.shortcut-slide {
   display: grid;
   grid-template-columns: repeat(var(--page-columns, 8), 78px);
   grid-auto-rows: 78px;
@@ -130,12 +132,25 @@ button {
   align-content: start;
   gap: 4px 38px;
   min-height: 406px;
-  transition: opacity 90ms ease, transform 90ms ease;
 }
 
-.shortcut-page.switching {
-  opacity: 0;
-  transform: translateY(4px);
+.shortcut-page.is-transitioning {
+  visibility: hidden;
+}
+
+.shortcut-transition {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  min-height: 406px;
+  pointer-events: none;
+  transition: transform 100ms ease-out;
+  will-change: transform;
+}
+
+.shortcut-slide {
+  flex: 0 0 100%;
 }
 
 .shortcut-slot {

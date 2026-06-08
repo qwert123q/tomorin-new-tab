@@ -7,7 +7,7 @@ const WALLPAPER_STORE = 'wallpapers';
 const ICON_STORE = 'icons';
 const WALLPAPER_ID = 'current';
 const PAGE_CAPACITY = 32;
-const PAGE_SWITCH_DELAY_MS = 45;
+const PAGE_SLIDE_DURATION_MS = 100;
 const SYNC_SCHEMA_VERSION = 1;
 const SYNC_STARTUP_MIN_INTERVAL_MS = 5 * 60 * 1000;
 const SYNC_REQUEST_TIMEOUT_MS = 3500;
@@ -90,6 +90,7 @@ let activeWallpaperUrl = null;
 let toastTimer = null;
 let touchStartX = 0;
 let movedShortcutId = null;
+let pageTransitionCleanup = null;
 let pendingCustomIcon = '';
 let pendingIconUrl = '';
 let pendingIconCleared = false;
@@ -256,13 +257,21 @@ function pageItemCount() {
   return state.shortcuts.length + (editMode ? 1 : 0);
 }
 
-function currentPageItems() {
-  const start = currentPageStartIndex();
+function pageStartIndex(page) {
+  return clampPage(page) * PAGE_CAPACITY;
+}
+
+function pageItems(page) {
+  const start = pageStartIndex(page);
   return orderedShortcuts().slice(start, start + PAGE_CAPACITY);
 }
 
+function currentPageItems() {
+  return pageItems(state.settings.currentPage);
+}
+
 function currentPageStartIndex() {
-  return clampPage(state.settings.currentPage) * PAGE_CAPACITY;
+  return pageStartIndex(state.settings.currentPage);
 }
 
 function render() {
@@ -285,11 +294,8 @@ function applyDensity() {
 }
 
 function renderShortcuts() {
-  const items = currentPageItems();
   els.shortcutPage.style.setProperty('--page-columns', '8');
-  els.shortcutPage.innerHTML = editMode
-    ? renderShortcutSlots(items)
-    : items.map(renderShortcut).join('');
+  els.shortcutPage.innerHTML = renderPageContent(state.settings.currentPage);
 
   if (movedShortcutId) {
     const movedCard = els.shortcutPage.querySelector(`[data-id="${movedShortcutId}"]`);
@@ -299,8 +305,14 @@ function renderShortcuts() {
   }
 }
 
-function renderShortcutSlots(items) {
-  const start = currentPageStartIndex();
+function renderPageContent(page) {
+  const items = pageItems(page);
+  return editMode
+    ? renderShortcutSlots(items, pageStartIndex(page))
+    : items.map(renderShortcut).join('');
+}
+
+function renderShortcutSlots(items, start = currentPageStartIndex()) {
   return Array.from({ length: PAGE_CAPACITY }, (_, index) => {
     const item = items[index];
     return renderShortcutSlot(item, start + index, index);
@@ -1166,12 +1178,40 @@ async function deleteEditingShortcut() {
 async function goToPage(page) {
   const nextPage = clampPage(page);
   if (nextPage === state.settings.currentPage) return;
-  els.shortcutPage.classList.add('switching');
-  await sleep(PAGE_SWITCH_DELAY_MS);
+  const previousPage = state.settings.currentPage;
+  startPageTransition(previousPage, nextPage);
   state.settings.currentPage = nextPage;
-  await saveState({ sync: false });
   render();
-  requestAnimationFrame(() => els.shortcutPage.classList.remove('switching'));
+  await saveState({ sync: false });
+}
+
+function startPageTransition(previousPage, nextPage) {
+  pageTransitionCleanup?.();
+  const direction = nextPage > previousPage ? 1 : -1;
+  const area = els.shortcutPage.closest('.shortcut-area');
+  const layer = document.createElement('div');
+  const pages = direction > 0 ? [previousPage, nextPage] : [nextPage, previousPage];
+
+  layer.className = 'shortcut-transition';
+  layer.setAttribute('aria-hidden', 'true');
+  layer.innerHTML = pages
+    .map(page => `<div class="shortcut-slide">${renderPageContent(page)}</div>`)
+    .join('');
+  layer.style.transform = direction > 0 ? 'translateX(0)' : 'translateX(-100%)';
+
+  els.shortcutPage.classList.add('is-transitioning');
+  area.append(layer);
+  requestAnimationFrame(() => {
+    layer.style.transform = direction > 0 ? 'translateX(-100%)' : 'translateX(0)';
+  });
+
+  const cleanup = () => {
+    layer.remove();
+    els.shortcutPage.classList.remove('is-transitioning');
+    if (pageTransitionCleanup === cleanup) pageTransitionCleanup = null;
+  };
+  pageTransitionCleanup = cleanup;
+  setTimeout(cleanup, PAGE_SLIDE_DURATION_MS + 40);
 }
 
 function handleKeydown(event) {

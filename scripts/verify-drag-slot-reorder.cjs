@@ -26,6 +26,24 @@ async function dragToSlot(page, sourceId, slotIndex) {
   }, { sourceId, slotIndex });
 }
 
+async function assertPageSlideTransition(page) {
+  const transition = await page.evaluate(() => {
+    const layer = document.querySelector('.shortcut-transition');
+    const duration = layer ? parseFloat(getComputedStyle(layer).transitionDuration) : 0;
+    return {
+      exists: Boolean(layer),
+      slideCount: layer?.querySelectorAll('.shortcut-slide').length || 0,
+      duration,
+      pageHidden: getComputedStyle(document.querySelector('.shortcut-page')).visibility === 'hidden',
+    };
+  });
+  assert(transition.exists, 'page switch should render a sliding transition layer');
+  assert(transition.slideCount === 2, `page switch should show the outgoing and incoming pages, got ${transition.slideCount}`);
+  assert(transition.duration > 0 && transition.duration <= 0.13, `page switch should be short, got ${transition.duration}s`);
+  assert(transition.pageHidden, 'base shortcut page should be hidden while the sliding transition is visible');
+  await page.waitForFunction(() => !document.querySelector('.shortcut-transition'), null, { timeout: 300 });
+}
+
 (async () => {
   const browser = await chromium.launch({
     headless: true,
@@ -61,10 +79,12 @@ async function dragToSlot(page, sourceId, slotIndex) {
   await page.evaluate(() => {
     document.querySelector('.newtab-shell').dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaX: 120, deltaY: 0 }));
   });
+  await assertPageSlideTransition(page);
   await page.waitForFunction(() => document.querySelector('.page-dot.active')?.dataset.page === '1', null, { timeout: 100 });
   await page.evaluate(() => {
     document.querySelector('.newtab-shell').dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaX: -120, deltaY: 0 }));
   });
+  await assertPageSlideTransition(page);
   await page.waitForFunction(() => document.querySelector('.page-dot.active')?.dataset.page === '0', null, { timeout: 100 });
   await page.evaluate(() => {
     const shell = document.querySelector('.newtab-shell');
@@ -77,6 +97,7 @@ async function dragToSlot(page, sourceId, slotIndex) {
       changedTouches: [new Touch({ identifier: 1, target: shell, clientX: 220, clientY: 240 })],
     }));
   });
+  await assertPageSlideTransition(page);
   await page.waitForFunction(() => document.querySelector('.page-dot.active')?.dataset.page === '1', null, { timeout: 100 });
   await page.evaluate(() => {
     const shell = document.querySelector('.newtab-shell');
@@ -89,6 +110,7 @@ async function dragToSlot(page, sourceId, slotIndex) {
       changedTouches: [new Touch({ identifier: 2, target: shell, clientX: 420, clientY: 240 })],
     }));
   });
+  await assertPageSlideTransition(page);
   await page.waitForFunction(() => document.querySelector('.page-dot.active')?.dataset.page === '0', null, { timeout: 100 });
 
   await dragToSlot(page, 'site-0', 5);
@@ -114,7 +136,7 @@ async function dragToSlot(page, sourceId, slotIndex) {
     return state.shortcuts.find(item => item.id === 'site-0')?.order === 31;
   });
 
-  const firstPageLast = await page.$$eval('.shortcut-card', cards => cards.map(card => card.dataset.id).slice(-3));
+  const firstPageLast = await page.$$eval('.shortcut-page .shortcut-card', cards => cards.map(card => card.dataset.id).slice(-3));
   assert(
     JSON.stringify(firstPageLast) === JSON.stringify(['site-30', 'site-31', 'site-0']),
     `dragging to the last visible slot should place the shortcut at the end of page one, got ${firstPageLast.join(',')}`,
@@ -122,13 +144,14 @@ async function dragToSlot(page, sourceId, slotIndex) {
 
   await page.click('[data-action="go-page"][data-page="1"]');
   await page.waitForFunction(() => document.querySelector('.page-dot.active')?.dataset.page === '1');
+  await page.waitForFunction(() => !document.querySelector('.shortcut-transition'));
   await dragToSlot(page, 'site-33', 0);
   await page.waitForFunction(() => {
     const state = JSON.parse(localStorage.getItem('tomorinNewTabState'));
     return state.shortcuts.find(item => item.id === 'site-33')?.order === 32;
   });
 
-  const secondPageIds = await page.$$eval('.shortcut-card', cards => cards.map(card => card.dataset.id));
+  const secondPageIds = await page.$$eval('.shortcut-page .shortcut-card', cards => cards.map(card => card.dataset.id));
   assert(
     JSON.stringify(secondPageIds.slice(0, 2)) === JSON.stringify(['site-33', 'site-32']),
     `dragging on page two should insert at that page slot and push later items, got ${secondPageIds.join(',')}`,
