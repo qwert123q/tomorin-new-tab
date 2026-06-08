@@ -7,7 +7,7 @@ const WALLPAPER_STORE = 'wallpapers';
 const ICON_STORE = 'icons';
 const WALLPAPER_ID = 'current';
 const PAGE_CAPACITY = 32;
-const PAGE_SLIDE_DURATION_MS = 100;
+const PAGE_SLIDE_DURATION_MS = 160;
 const SYNC_SCHEMA_VERSION = 1;
 const SYNC_STARTUP_MIN_INTERVAL_MS = 5 * 60 * 1000;
 const SYNC_REQUEST_TIMEOUT_MS = 3500;
@@ -91,6 +91,7 @@ let toastTimer = null;
 let touchStartX = 0;
 let movedShortcutId = null;
 let pageTransitionCleanup = null;
+let pageTransitionId = 0;
 let pendingCustomIcon = '';
 let pendingIconUrl = '';
 let pendingIconCleared = false;
@@ -1179,10 +1180,14 @@ async function goToPage(page) {
   const nextPage = clampPage(page);
   if (nextPage === state.settings.currentPage) return;
   const previousPage = state.settings.currentPage;
-  startPageTransition(previousPage, nextPage);
+  const transitionId = ++pageTransitionId;
+  const transition = startPageTransition(previousPage, nextPage);
+  await transition.finished;
+  if (transitionId !== pageTransitionId) return;
   state.settings.currentPage = nextPage;
-  render();
   await saveState({ sync: false });
+  render();
+  transition.cleanup();
 }
 
 function startPageTransition(previousPage, nextPage) {
@@ -1197,11 +1202,14 @@ function startPageTransition(previousPage, nextPage) {
   layer.innerHTML = pages
     .map(page => `<div class="shortcut-slide">${renderPageContent(page)}</div>`)
     .join('');
+  layer.style.transition = 'none';
   layer.style.transform = direction > 0 ? 'translateX(0)' : 'translateX(-100%)';
 
   els.shortcutPage.classList.add('is-transitioning');
   area.append(layer);
+  layer.getBoundingClientRect();
   requestAnimationFrame(() => {
+    layer.style.transition = '';
     layer.style.transform = direction > 0 ? 'translateX(-100%)' : 'translateX(0)';
   });
 
@@ -1210,8 +1218,12 @@ function startPageTransition(previousPage, nextPage) {
     els.shortcutPage.classList.remove('is-transitioning');
     if (pageTransitionCleanup === cleanup) pageTransitionCleanup = null;
   };
+  const finished = new Promise(resolve => {
+    setTimeout(resolve, PAGE_SLIDE_DURATION_MS);
+  });
   pageTransitionCleanup = cleanup;
-  setTimeout(cleanup, PAGE_SLIDE_DURATION_MS + 40);
+  setTimeout(cleanup, PAGE_SLIDE_DURATION_MS + 80);
+  return { cleanup, finished };
 }
 
 function handleKeydown(event) {

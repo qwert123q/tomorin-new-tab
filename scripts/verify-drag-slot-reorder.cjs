@@ -26,7 +26,11 @@ async function dragToSlot(page, sourceId, slotIndex) {
   }, { sourceId, slotIndex });
 }
 
-async function assertPageSlideTransition(page) {
+async function assertPageSlideTransition(page, activePageBeforeCommit) {
+  await page.waitForFunction(() => {
+    const layer = document.querySelector('.shortcut-transition');
+    return layer && parseFloat(getComputedStyle(layer).transitionDuration) > 0;
+  }, null, { timeout: 100 });
   const transition = await page.evaluate(() => {
     const layer = document.querySelector('.shortcut-transition');
     const duration = layer ? parseFloat(getComputedStyle(layer).transitionDuration) : 0;
@@ -35,12 +39,17 @@ async function assertPageSlideTransition(page) {
       slideCount: layer?.querySelectorAll('.shortcut-slide').length || 0,
       duration,
       pageHidden: getComputedStyle(document.querySelector('.shortcut-page')).visibility === 'hidden',
+      activePage: document.querySelector('.page-dot.active')?.dataset.page,
     };
   });
   assert(transition.exists, 'page switch should render a sliding transition layer');
   assert(transition.slideCount === 2, `page switch should show the outgoing and incoming pages, got ${transition.slideCount}`);
-  assert(transition.duration > 0 && transition.duration <= 0.13, `page switch should be short, got ${transition.duration}s`);
+  assert(transition.duration > 0 && transition.duration <= 0.18, `page switch should be short, got ${transition.duration}s`);
   assert(transition.pageHidden, 'base shortcut page should be hidden while the sliding transition is visible');
+  assert(
+    transition.activePage === activePageBeforeCommit,
+    `real page should not switch before the slide finishes, got active page ${transition.activePage}`,
+  );
   await page.waitForFunction(() => !document.querySelector('.shortcut-transition'), null, { timeout: 300 });
 }
 
@@ -79,13 +88,13 @@ async function assertPageSlideTransition(page) {
   await page.evaluate(() => {
     document.querySelector('.newtab-shell').dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaX: 120, deltaY: 0 }));
   });
-  await assertPageSlideTransition(page);
-  await page.waitForFunction(() => document.querySelector('.page-dot.active')?.dataset.page === '1', null, { timeout: 100 });
+  await assertPageSlideTransition(page, '0');
+  await page.waitForFunction(() => document.querySelector('.page-dot.active')?.dataset.page === '1', null, { timeout: 300 });
   await page.evaluate(() => {
     document.querySelector('.newtab-shell').dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaX: -120, deltaY: 0 }));
   });
-  await assertPageSlideTransition(page);
-  await page.waitForFunction(() => document.querySelector('.page-dot.active')?.dataset.page === '0', null, { timeout: 100 });
+  await assertPageSlideTransition(page, '1');
+  await page.waitForFunction(() => document.querySelector('.page-dot.active')?.dataset.page === '0', null, { timeout: 300 });
   await page.evaluate(() => {
     const shell = document.querySelector('.newtab-shell');
     shell.dispatchEvent(new TouchEvent('touchstart', {
@@ -97,8 +106,8 @@ async function assertPageSlideTransition(page) {
       changedTouches: [new Touch({ identifier: 1, target: shell, clientX: 220, clientY: 240 })],
     }));
   });
-  await assertPageSlideTransition(page);
-  await page.waitForFunction(() => document.querySelector('.page-dot.active')?.dataset.page === '1', null, { timeout: 100 });
+  await assertPageSlideTransition(page, '0');
+  await page.waitForFunction(() => document.querySelector('.page-dot.active')?.dataset.page === '1', null, { timeout: 300 });
   await page.evaluate(() => {
     const shell = document.querySelector('.newtab-shell');
     shell.dispatchEvent(new TouchEvent('touchstart', {
@@ -110,8 +119,8 @@ async function assertPageSlideTransition(page) {
       changedTouches: [new Touch({ identifier: 2, target: shell, clientX: 420, clientY: 240 })],
     }));
   });
-  await assertPageSlideTransition(page);
-  await page.waitForFunction(() => document.querySelector('.page-dot.active')?.dataset.page === '0', null, { timeout: 100 });
+  await assertPageSlideTransition(page, '1');
+  await page.waitForFunction(() => document.querySelector('.page-dot.active')?.dataset.page === '0', null, { timeout: 300 });
 
   await dragToSlot(page, 'site-0', 5);
   await page.waitForFunction(() => {
