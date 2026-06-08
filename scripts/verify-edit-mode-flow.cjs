@@ -57,6 +57,20 @@ function assert(condition, message) {
   assert(rightClickState.slotCount === 32, `global edit mode should render 32 slots, got ${rightClickState.slotCount}`);
   assert(rightClickState.addSlotIndex === '6', `add button should appear after the last shortcut at slot 6, got ${rightClickState.addSlotIndex}`);
 
+  const editMarkerState = await page.evaluate(() => {
+    const markers = Array.from(document.querySelectorAll('.shortcut-edit-marker'));
+    return {
+      count: markers.length,
+      visibleCount: markers.filter(marker => getComputedStyle(marker).opacity === '1').length,
+      pointerSafe: markers.every(marker => getComputedStyle(marker).pointerEvents === 'none'),
+      text: markers[0]?.textContent.trim(),
+    };
+  });
+  assert(editMarkerState.count === 6, `edit mode should render one marker per shortcut, got ${editMarkerState.count}`);
+  assert(editMarkerState.visibleCount === 6, `edit markers should be visible in edit mode, got ${editMarkerState.visibleCount}`);
+  assert(editMarkerState.pointerSafe, 'edit markers should not intercept shortcut pointer events');
+  assert(editMarkerState.text === '✎', `edit marker should use a small edit icon, got ${editMarkerState.text}`);
+
   await page.click('[data-action="close-dialog"]');
   await page.waitForFunction(() => !document.querySelector('#shortcutDialog').open);
   await page.click('[data-action="add-shortcut"]');
@@ -71,6 +85,11 @@ function assert(condition, message) {
 
   await page.keyboard.press('Escape');
   await page.waitForFunction(() => !document.querySelector('.newtab-shell')?.classList.contains('edit-mode'));
+  const hiddenEditMarkers = await page.$$eval(
+    '.shortcut-edit-marker',
+    markers => markers.every(marker => getComputedStyle(marker).opacity === '0'),
+  );
+  assert(hiddenEditMarkers, 'edit markers should be hidden after exiting edit mode');
 
   await page.click('[data-id="site-1"]', { button: 'right' });
   await page.click('[data-action="close-dialog"]');

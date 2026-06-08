@@ -348,6 +348,7 @@ function renderShortcut(item) {
     <div class="shortcut-card ${item.size}" role="link" tabindex="0" data-id="${item.id}" data-url="${url}" draggable="${draggable}" title="${title}">
       <span class="shortcut-icon">
         <img src="${favicon}" alt="" loading="lazy" data-fallbacks="${fallbacks}" data-fallback-index="0">
+        <span class="shortcut-edit-marker" aria-hidden="true">✎</span>
       </span>
       <span class="shortcut-title">${title}</span>
     </div>

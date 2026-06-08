@@ -219,6 +219,7 @@ button {
 }
 
 .shortcut-icon {
+  position: relative;
   display: grid;
   place-items: center;
   width: 42px;
@@ -248,6 +249,37 @@ button {
   border-radius: inherit;
   object-fit: cover;
   image-rendering: auto;
+}
+
+.shortcut-edit-marker {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  color: #233041;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, -50%) scale(0.86);
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.edit-mode .shortcut-edit-marker {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
+}
+
+.shortcut-card.dragging .shortcut-edit-marker,
+.shortcut-card.removing .shortcut-edit-marker {
+  opacity: 0;
 }
 
 .shortcut-title {
