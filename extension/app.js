@@ -85,6 +85,7 @@ let state = structuredClone(DEFAULT_STATE);
 let editMode = false;
 let editingId = null;
 let draggedId = null;
+let activeDropSlot = null;
 let activeWallpaperUrl = null;
 let toastTimer = null;
 let touchStartX = 0;
@@ -253,9 +254,12 @@ function clampPageForCount(page, shortcutCount) {
 }
 
 function currentPageItems() {
-  const page = clampPage(state.settings.currentPage);
-  const start = page * PAGE_CAPACITY;
+  const start = currentPageStartIndex();
   return orderedShortcuts().slice(start, start + PAGE_CAPACITY);
+}
+
+function currentPageStartIndex() {
+  return clampPage(state.settings.currentPage) * PAGE_CAPACITY;
 }
 
 function render() {
@@ -280,7 +284,9 @@ function applyDensity() {
 function renderShortcuts() {
   const items = currentPageItems();
   els.shortcutPage.style.setProperty('--page-columns', '8');
-  els.shortcutPage.innerHTML = items.map(renderShortcut).join('');
+  els.shortcutPage.innerHTML = editMode
+    ? renderShortcutSlots(items)
+    : items.map(renderShortcut).join('');
 
   if (movedShortcutId) {
     const movedCard = els.shortcutPage.querySelector(`[data-id="${movedShortcutId}"]`);
@@ -288,6 +294,24 @@ function renderShortcuts() {
     setTimeout(() => movedCard?.classList.remove('moved-pop'), 320);
     movedShortcutId = null;
   }
+}
+
+function renderShortcutSlots(items) {
+  const start = currentPageStartIndex();
+  return Array.from({ length: PAGE_CAPACITY }, (_, index) => {
+    const item = items[index];
+    return renderShortcutSlot(item, start + index, index);
+  }).join('');
+}
+
+function renderShortcutSlot(item, globalIndex, slotIndex) {
+  const size = item ? ` ${item.size}` : '';
+  const empty = item ? '' : ' empty';
+  return `
+    <div class="shortcut-slot${size}${empty}" data-global-index="${globalIndex}" data-slot-index="${slotIndex}">
+      ${item ? renderShortcut(item) : ''}
+    </div>
+  `;
 }
 
 function handleShortcutContextMenu(event) {
@@ -1164,36 +1188,46 @@ function handleDragStart(event) {
 
 function handleDragOver(event) {
   if (!editMode || !draggedId) return;
-  const card = event.target.closest('.shortcut-card');
-  if (!card || card.dataset.id === draggedId) return;
+  const slot = event.target.closest('.shortcut-slot');
+  if (!slot) return;
   event.preventDefault();
   event.dataTransfer.dropEffect = 'move';
+  setActiveDropSlot(slot);
 }
 
 async function handleDrop(event) {
   if (!editMode || !draggedId) return;
-  const target = event.target.closest('.shortcut-card');
-  if (!target || target.dataset.id === draggedId) return;
+  const target = event.target.closest('.shortcut-slot');
+  if (!target) return;
   event.preventDefault();
 
-  reorderShortcuts(draggedId, target.dataset.id);
+  reorderShortcutToIndex(draggedId, Number(target.dataset.globalIndex));
   draggedId = null;
+  setActiveDropSlot(null);
   await saveState();
   render();
 }
 
 function handleDragEnd() {
   draggedId = null;
+  setActiveDropSlot(null);
   document.querySelectorAll('.shortcut-card.dragging').forEach(card => card.classList.remove('dragging'));
 }
 
-function reorderShortcuts(sourceId, targetId) {
+function setActiveDropSlot(slot) {
+  if (activeDropSlot === slot) return;
+  activeDropSlot?.classList.remove('drag-over');
+  activeDropSlot = slot;
+  activeDropSlot?.classList.add('drag-over');
+}
+
+function reorderShortcutToIndex(sourceId, targetIndex) {
   const ordered = orderedShortcuts();
   const from = ordered.findIndex(item => item.id === sourceId);
-  const to = ordered.findIndex(item => item.id === targetId);
-  if (from === -1 || to === -1) return;
+  if (from === -1 || !Number.isFinite(targetIndex)) return;
   const [moved] = ordered.splice(from, 1);
-  ordered.splice(to, 0, moved);
+  const insertionIndex = Math.max(0, Math.min(targetIndex, ordered.length));
+  ordered.splice(insertionIndex, 0, moved);
   const now = Date.now();
   state.shortcuts = ordered.map((item, index) => ({ ...item, order: index, updatedAt: now }));
   movedShortcutId = sourceId;
