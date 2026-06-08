@@ -123,8 +123,29 @@ button {
   overflow: hidden;
 }
 
-.shortcut-page,
-.shortcut-slide {
+.shortcut-viewport {
+  width: 100%;
+  min-height: 406px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scroll-behavior: smooth;
+  scroll-snap-type: x mandatory;
+  scrollbar-width: none;
+}
+
+.shortcut-viewport::-webkit-scrollbar {
+  display: none;
+}
+
+.shortcut-pages {
+  display: grid;
+  grid-auto-columns: 100%;
+  grid-auto-flow: column;
+  min-height: 406px;
+}
+
+.shortcut-page {
   display: grid;
   grid-template-columns: repeat(var(--page-columns, 8), 78px);
   grid-auto-rows: 78px;
@@ -132,25 +153,8 @@ button {
   align-content: start;
   gap: 4px 38px;
   min-height: 406px;
-}
-
-.shortcut-page.is-transitioning {
-  visibility: hidden;
-}
-
-.shortcut-transition {
-  position: absolute;
-  inset: 0;
-  z-index: 2;
-  display: flex;
-  min-height: 406px;
-  pointer-events: none;
-  transition: transform 160ms ease-out;
-  will-change: transform;
-}
-
-.shortcut-slide {
-  flex: 0 0 100%;
+  scroll-snap-align: start;
+  scroll-snap-stop: always;
 }
 
 .shortcut-slot {
@@ -408,6 +412,11 @@ button {
   grid-template-columns: repeat(var(--page-columns, 8), 108px);
   grid-auto-rows: 104px;
   gap: 6px 44px;
+  min-height: 544px;
+}
+
+.density-large .shortcut-viewport,
+.density-large .shortcut-pages {
   min-height: 544px;
 }
 
@@ -899,6 +908,11 @@ button {
 
   .search-box input {
     font-size: 20px;
+  }
+
+  .shortcut-viewport,
+  .shortcut-pages {
+    min-height: 410px;
   }
 
   .shortcut-page {

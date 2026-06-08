@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Tomorin New Tab</title>
-  <link rel="stylesheet" href="style.css?v=0.1.35">
+  <link rel="stylesheet" href="style.css?v=0.1.36">
 </head>
 <body>
   <main class="newtab-shell">
@@ -19,7 +19,9 @@
       </form>
 
       <section class="shortcut-area" aria-label="Favorite websites">
-        <div class="shortcut-page" id="shortcutPage"></div>
+        <div class="shortcut-viewport" id="shortcutViewport">
+          <div class="shortcut-pages" id="shortcutPages"></div>
+        </div>
         <div class="empty-state" id="emptyState" hidden>
           <p>还没有收藏网站</p>
           <button class="text-button" type="button" data-action="add-shortcut">添加第一个</button>
@@ -137,6 +139,6 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-  <script src="app.js?v=0.1.35"></script>
+  <script src="app.js?v=0.1.36"></script>
 </body>
 </html>

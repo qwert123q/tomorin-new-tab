@@ -7,7 +7,6 @@ const WALLPAPER_STORE = 'wallpapers';
 const ICON_STORE = 'icons';
 const WALLPAPER_ID = 'current';
 const PAGE_CAPACITY = 32;
-const PAGE_SLIDE_DURATION_MS = 160;
 const SYNC_SCHEMA_VERSION = 1;
 const SYNC_STARTUP_MIN_INTERVAL_MS = 5 * 60 * 1000;
 const SYNC_REQUEST_TIMEOUT_MS = 3500;
@@ -56,7 +55,8 @@ const els = {
   shell: document.querySelector('.newtab-shell'),
   searchForm: document.getElementById('searchForm'),
   searchInput: document.getElementById('searchInput'),
-  shortcutPage: document.getElementById('shortcutPage'),
+  shortcutViewport: document.getElementById('shortcutViewport'),
+  shortcutPages: document.getElementById('shortcutPages'),
   emptyState: document.getElementById('emptyState'),
   pageDots: document.getElementById('pageDots'),
   toolbar: document.querySelector('.toolbar'),
@@ -90,8 +90,8 @@ let activeWallpaperUrl = null;
 let toastTimer = null;
 let touchStartX = 0;
 let movedShortcutId = null;
-let pageTransitionCleanup = null;
-let pageTransitionId = 0;
+let pageScrollTimer = null;
+let suppressScrollState = false;
 let pendingCustomIcon = '';
 let pendingIconUrl = '';
 let pendingIconCleared = false;
@@ -135,14 +135,15 @@ function bindEvents() {
       renderIconPreview();
     }
   });
-  els.shortcutPage.addEventListener('load', handleShortcutIconLoad, true);
-  els.shortcutPage.addEventListener('error', handleShortcutIconError, true);
+  els.shortcutPages.addEventListener('load', handleShortcutIconLoad, true);
+  els.shortcutPages.addEventListener('error', handleShortcutIconError, true);
   document.addEventListener('keydown', handleKeydown);
-  els.shortcutPage.addEventListener('dragstart', handleDragStart);
-  els.shortcutPage.addEventListener('dragover', handleDragOver);
-  els.shortcutPage.addEventListener('drop', handleDrop);
-  els.shortcutPage.addEventListener('dragend', handleDragEnd);
-  els.shortcutPage.addEventListener('contextmenu', handleShortcutContextMenu);
+  els.shortcutPages.addEventListener('dragstart', handleDragStart);
+  els.shortcutPages.addEventListener('dragover', handleDragOver);
+  els.shortcutPages.addEventListener('drop', handleDrop);
+  els.shortcutPages.addEventListener('dragend', handleDragEnd);
+  els.shortcutPages.addEventListener('contextmenu', handleShortcutContextMenu);
+  els.shortcutViewport.addEventListener('scroll', handleShortcutScroll, { passive: true });
   els.shell.addEventListener('wheel', handleShortcutWheel, { passive: true });
   els.shell.addEventListener('touchstart', handleTouchStart, { passive: true });
   els.shell.addEventListener('touchend', handleTouchEnd, { passive: true });
@@ -282,6 +283,7 @@ function render() {
   renderShortcuts();
   renderDots();
   els.emptyState.hidden = state.shortcuts.length > 0;
+  scrollToShortcutPage(state.settings.currentPage, { smooth: false });
 }
 
 function applyDensity() {
@@ -295,15 +297,29 @@ function applyDensity() {
 }
 
 function renderShortcuts() {
-  els.shortcutPage.style.setProperty('--page-columns', '8');
-  els.shortcutPage.innerHTML = renderPageContent(state.settings.currentPage);
+  els.shortcutPages.style.setProperty('--page-columns', '8');
+  els.shortcutPages.innerHTML = Array.from({ length: pageCount() }, (_, page) => {
+    const active = page === state.settings.currentPage ? ' is-active' : '';
+    return `<section class="shortcut-page${active}" data-page="${page}">${renderPageContent(page)}</section>`;
+  }).join('');
 
   if (movedShortcutId) {
-    const movedCard = els.shortcutPage.querySelector(`[data-id="${movedShortcutId}"]`);
+    const movedCard = activeShortcutPage()?.querySelector(`[data-id="${movedShortcutId}"]`);
     requestAnimationFrame(() => movedCard?.classList.add('moved-pop'));
     setTimeout(() => movedCard?.classList.remove('moved-pop'), 320);
     movedShortcutId = null;
   }
+}
+
+function activeShortcutPage() {
+  return els.shortcutPages.querySelector(`.shortcut-page[data-page="${state.settings.currentPage}"]`);
+}
+
+function updateActivePageState() {
+  els.shortcutPages.querySelectorAll('.shortcut-page').forEach(page => {
+    page.classList.toggle('is-active', page.dataset.page === String(state.settings.currentPage));
+  });
+  renderDots();
 }
 
 function renderPageContent(page) {
@@ -1165,7 +1181,7 @@ async function deleteEditingShortcut() {
   const idToDelete = editingId;
   const previous = state.shortcuts.find(item => item.id === idToDelete);
   closeShortcutDialog();
-  const card = els.shortcutPage.querySelector(`[data-id="${idToDelete}"]`);
+  const card = activeShortcutPage()?.querySelector(`[data-id="${idToDelete}"]`);
   card?.classList.add('removing');
   await sleep(card ? 220 : 0);
   state.shortcuts = state.shortcuts.filter(item => item.id !== idToDelete);
@@ -1178,52 +1194,36 @@ async function deleteEditingShortcut() {
 
 async function goToPage(page) {
   const nextPage = clampPage(page);
-  if (nextPage === state.settings.currentPage) return;
-  const previousPage = state.settings.currentPage;
-  const transitionId = ++pageTransitionId;
-  const transition = startPageTransition(previousPage, nextPage);
-  await transition.finished;
-  if (transitionId !== pageTransitionId) return;
+  if (nextPage === state.settings.currentPage) {
+    scrollToShortcutPage(nextPage, { smooth: true });
+    return;
+  }
   state.settings.currentPage = nextPage;
+  updateActivePageState();
+  scrollToShortcutPage(nextPage, { smooth: true });
   await saveState({ sync: false });
-  render();
-  transition.cleanup();
 }
 
-function startPageTransition(previousPage, nextPage) {
-  pageTransitionCleanup?.();
-  const direction = nextPage > previousPage ? 1 : -1;
-  const area = els.shortcutPage.closest('.shortcut-area');
-  const layer = document.createElement('div');
-  const pages = direction > 0 ? [previousPage, nextPage] : [nextPage, previousPage];
-
-  layer.className = 'shortcut-transition';
-  layer.setAttribute('aria-hidden', 'true');
-  layer.innerHTML = pages
-    .map(page => `<div class="shortcut-slide">${renderPageContent(page)}</div>`)
-    .join('');
-  layer.style.transition = 'none';
-  layer.style.transform = direction > 0 ? 'translateX(0)' : 'translateX(-100%)';
-
-  els.shortcutPage.classList.add('is-transitioning');
-  area.append(layer);
-  layer.getBoundingClientRect();
+function scrollToShortcutPage(page, { smooth = false } = {}) {
+  const left = clampPage(page) * els.shortcutViewport.clientWidth;
+  suppressScrollState = true;
+  els.shortcutViewport.scrollTo({ left, behavior: smooth ? 'smooth' : 'auto' });
   requestAnimationFrame(() => {
-    layer.style.transition = '';
-    layer.style.transform = direction > 0 ? 'translateX(-100%)' : 'translateX(0)';
+    suppressScrollState = false;
   });
+}
 
-  const cleanup = () => {
-    layer.remove();
-    els.shortcutPage.classList.remove('is-transitioning');
-    if (pageTransitionCleanup === cleanup) pageTransitionCleanup = null;
-  };
-  const finished = new Promise(resolve => {
-    setTimeout(resolve, PAGE_SLIDE_DURATION_MS);
-  });
-  pageTransitionCleanup = cleanup;
-  setTimeout(cleanup, PAGE_SLIDE_DURATION_MS + 80);
-  return { cleanup, finished };
+function handleShortcutScroll() {
+  if (suppressScrollState) return;
+  clearTimeout(pageScrollTimer);
+  pageScrollTimer = setTimeout(async () => {
+    const width = els.shortcutViewport.clientWidth || 1;
+    const nextPage = clampPage(Math.round(els.shortcutViewport.scrollLeft / width));
+    if (nextPage === state.settings.currentPage) return;
+    state.settings.currentPage = nextPage;
+    updateActivePageState();
+    await saveState({ sync: false });
+  }, 60);
 }
 
 function handleKeydown(event) {
@@ -1251,6 +1251,7 @@ function handleKeydown(event) {
 
 function handleShortcutWheel(event) {
   if (shouldIgnorePageGesture(event)) return;
+  if (event.target.closest('.shortcut-viewport')) return;
   if (Math.abs(event.deltaX) <= Math.abs(event.deltaY)) return;
   if (event.deltaX > 20) goToPage(state.settings.currentPage + 1);
   if (event.deltaX < -20) goToPage(state.settings.currentPage - 1);
@@ -1258,11 +1259,13 @@ function handleShortcutWheel(event) {
 
 function handleTouchStart(event) {
   if (shouldIgnorePageGesture(event)) return;
+  if (event.target.closest('.shortcut-viewport')) return;
   touchStartX = event.changedTouches[0]?.clientX || 0;
 }
 
 function handleTouchEnd(event) {
   if (shouldIgnorePageGesture(event)) return;
+  if (event.target.closest('.shortcut-viewport')) return;
   const endX = event.changedTouches[0]?.clientX || 0;
   const delta = endX - touchStartX;
   if (Math.abs(delta) < 60) return;

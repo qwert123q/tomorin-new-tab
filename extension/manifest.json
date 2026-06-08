@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Tomorin New Tab",
-  "version": "0.1.35",
+  "version": "0.1.36",
   "description": "A lightweight local-first new tab page with search, shortcuts, pagination, and custom wallpaper.",
   "icons": {
     "16": "icons/icon-16.png",

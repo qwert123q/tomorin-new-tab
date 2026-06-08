@@ -15,8 +15,9 @@ async function revealSettings(page) {
 
 async function dragToSlot(page, sourceId, slotIndex) {
   await page.evaluate(({ sourceId, slotIndex }) => {
-    const source = document.querySelector(`[data-id="${sourceId}"]`);
-    const target = document.querySelector(`[data-slot-index="${slotIndex}"]`);
+    const activePage = document.querySelector('.shortcut-page.is-active');
+    const source = activePage?.querySelector(`[data-id="${sourceId}"]`);
+    const target = activePage?.querySelector(`[data-slot-index="${slotIndex}"]`);
     if (!source || !target) throw new Error('missing drag source or target slot');
     const data = new DataTransfer();
     source.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: data }));
@@ -26,31 +27,31 @@ async function dragToSlot(page, sourceId, slotIndex) {
   }, { sourceId, slotIndex });
 }
 
-async function assertPageSlideTransition(page, activePageBeforeCommit) {
-  await page.waitForFunction(() => {
-    const layer = document.querySelector('.shortcut-transition');
-    return layer && parseFloat(getComputedStyle(layer).transitionDuration) > 0;
-  }, null, { timeout: 100 });
-  const transition = await page.evaluate(() => {
-    const layer = document.querySelector('.shortcut-transition');
-    const duration = layer ? parseFloat(getComputedStyle(layer).transitionDuration) : 0;
+async function assertScrollSnapPager(page, expectedPage) {
+  await page.waitForFunction(pageIndex => {
+    const viewport = document.querySelector('.shortcut-viewport');
+    return document.querySelector('.page-dot.active')?.dataset.page === String(pageIndex)
+      && Math.abs(viewport.scrollLeft - viewport.clientWidth * pageIndex) <= 2;
+  }, expectedPage, { timeout: 600 });
+  const pager = await page.evaluate(() => {
+    const viewport = document.querySelector('.shortcut-viewport');
+    const pages = [...document.querySelectorAll('.shortcut-page')];
     return {
-      exists: Boolean(layer),
-      slideCount: layer?.querySelectorAll('.shortcut-slide').length || 0,
-      duration,
-      pageHidden: getComputedStyle(document.querySelector('.shortcut-page')).visibility === 'hidden',
-      activePage: document.querySelector('.page-dot.active')?.dataset.page,
+      hasViewport: Boolean(viewport),
+      pageCount: pages.length,
+      activePage: document.querySelector('.shortcut-page.is-active')?.dataset.page,
+      hasTransitionLayer: Boolean(document.querySelector('.shortcut-transition')),
+      scrollSnapType: viewport ? getComputedStyle(viewport).scrollSnapType : '',
+      scrollLeft: viewport?.scrollLeft || 0,
+      viewportWidth: viewport?.clientWidth || 0,
     };
   });
-  assert(transition.exists, 'page switch should render a sliding transition layer');
-  assert(transition.slideCount === 2, `page switch should show the outgoing and incoming pages, got ${transition.slideCount}`);
-  assert(transition.duration > 0 && transition.duration <= 0.18, `page switch should be short, got ${transition.duration}s`);
-  assert(transition.pageHidden, 'base shortcut page should be hidden while the sliding transition is visible');
-  assert(
-    transition.activePage === activePageBeforeCommit,
-    `real page should not switch before the slide finishes, got active page ${transition.activePage}`,
-  );
-  await page.waitForFunction(() => !document.querySelector('.shortcut-transition'), null, { timeout: 300 });
+  assert(pager.hasViewport, 'shortcuts should render inside a horizontal scroll viewport');
+  assert(pager.pageCount >= 2, `multi-page data should render multiple shortcut pages, got ${pager.pageCount}`);
+  assert(pager.activePage === String(expectedPage), `active shortcut page should be ${expectedPage}, got ${pager.activePage}`);
+  assert(!pager.hasTransitionLayer, 'scroll snap pagination should not use the temporary transition layer');
+  assert(pager.scrollSnapType.includes('x'), `shortcut viewport should use horizontal scroll snap, got ${pager.scrollSnapType}`);
+  assert(Math.abs(pager.scrollLeft - pager.viewportWidth * expectedPage) <= 2, `viewport should scroll to page ${expectedPage}, got ${JSON.stringify(pager)}`);
 }
 
 (async () => {
@@ -82,19 +83,20 @@ async function assertPageSlideTransition(page, activePageBeforeCommit) {
   await page.click('[data-id="site-0"]', { button: 'right' });
   await page.waitForSelector('[data-slot-index="31"]');
 
-  const slotCount = await page.$$eval('.shortcut-slot', slots => slots.length);
+  const slotCount = await page.$$eval('.shortcut-page.is-active .shortcut-slot', slots => slots.length);
   assert(slotCount === 32, `edit mode should render 32 drop slots, got ${slotCount}`);
+  await assertScrollSnapPager(page, 0);
 
   await page.evaluate(() => {
-    document.querySelector('.newtab-shell').dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaX: 120, deltaY: 0 }));
+    document.querySelector('.shortcut-viewport').scrollLeft = document.querySelector('.shortcut-viewport').clientWidth;
+    document.querySelector('.shortcut-viewport').dispatchEvent(new Event('scroll', { bubbles: true }));
   });
-  await assertPageSlideTransition(page, '0');
-  await page.waitForFunction(() => document.querySelector('.page-dot.active')?.dataset.page === '1', null, { timeout: 300 });
+  await assertScrollSnapPager(page, 1);
   await page.evaluate(() => {
-    document.querySelector('.newtab-shell').dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaX: -120, deltaY: 0 }));
+    document.querySelector('.shortcut-viewport').scrollLeft = 0;
+    document.querySelector('.shortcut-viewport').dispatchEvent(new Event('scroll', { bubbles: true }));
   });
-  await assertPageSlideTransition(page, '1');
-  await page.waitForFunction(() => document.querySelector('.page-dot.active')?.dataset.page === '0', null, { timeout: 300 });
+  await assertScrollSnapPager(page, 0);
   await page.evaluate(() => {
     const shell = document.querySelector('.newtab-shell');
     shell.dispatchEvent(new TouchEvent('touchstart', {
@@ -106,8 +108,7 @@ async function assertPageSlideTransition(page, activePageBeforeCommit) {
       changedTouches: [new Touch({ identifier: 1, target: shell, clientX: 220, clientY: 240 })],
     }));
   });
-  await assertPageSlideTransition(page, '0');
-  await page.waitForFunction(() => document.querySelector('.page-dot.active')?.dataset.page === '1', null, { timeout: 300 });
+  await assertScrollSnapPager(page, 1);
   await page.evaluate(() => {
     const shell = document.querySelector('.newtab-shell');
     shell.dispatchEvent(new TouchEvent('touchstart', {
@@ -119,8 +120,7 @@ async function assertPageSlideTransition(page, activePageBeforeCommit) {
       changedTouches: [new Touch({ identifier: 2, target: shell, clientX: 420, clientY: 240 })],
     }));
   });
-  await assertPageSlideTransition(page, '1');
-  await page.waitForFunction(() => document.querySelector('.page-dot.active')?.dataset.page === '0', null, { timeout: 300 });
+  await assertScrollSnapPager(page, 0);
 
   await dragToSlot(page, 'site-0', 5);
   await page.waitForFunction(() => {
@@ -145,7 +145,7 @@ async function assertPageSlideTransition(page, activePageBeforeCommit) {
     return state.shortcuts.find(item => item.id === 'site-0')?.order === 31;
   });
 
-  const firstPageLast = await page.$$eval('.shortcut-page .shortcut-card', cards => cards.map(card => card.dataset.id).slice(-3));
+  const firstPageLast = await page.$$eval('.shortcut-page.is-active .shortcut-card', cards => cards.map(card => card.dataset.id).slice(-3));
   assert(
     JSON.stringify(firstPageLast) === JSON.stringify(['site-30', 'site-31', 'site-0']),
     `dragging to the last visible slot should place the shortcut at the end of page one, got ${firstPageLast.join(',')}`,
@@ -153,14 +153,13 @@ async function assertPageSlideTransition(page, activePageBeforeCommit) {
 
   await page.click('[data-action="go-page"][data-page="1"]');
   await page.waitForFunction(() => document.querySelector('.page-dot.active')?.dataset.page === '1');
-  await page.waitForFunction(() => !document.querySelector('.shortcut-transition'));
   await dragToSlot(page, 'site-33', 0);
   await page.waitForFunction(() => {
     const state = JSON.parse(localStorage.getItem('tomorinNewTabState'));
     return state.shortcuts.find(item => item.id === 'site-33')?.order === 32;
   });
 
-  const secondPageIds = await page.$$eval('.shortcut-page .shortcut-card', cards => cards.map(card => card.dataset.id));
+  const secondPageIds = await page.$$eval('.shortcut-page.is-active .shortcut-card', cards => cards.map(card => card.dataset.id));
   assert(
     JSON.stringify(secondPageIds.slice(0, 2)) === JSON.stringify(['site-33', 'site-32']),
     `dragging on page two should insert at that page slot and push later items, got ${secondPageIds.join(',')}`,

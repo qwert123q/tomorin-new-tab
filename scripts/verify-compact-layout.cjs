@@ -40,7 +40,7 @@ function assert(condition, message) {
   const tabCount = await page.$$eval('.search-tabs span', nodes => nodes.length);
   assert(tabCount === 0, `search category words should be removed, got ${tabCount}`);
 
-  const cardCount = await page.$$eval('.shortcut-card', cards => cards.length);
+  const cardCount = await page.$$eval('.shortcut-page.is-active .shortcut-card', cards => cards.length);
   assert(cardCount === 32, `first page should hold 32 shortcuts in a 4x8 layout, got ${cardCount}`);
 
   const dotCount = await page.$$eval('.page-dot', dots => dots.length);
@@ -49,11 +49,12 @@ function assert(condition, message) {
   const metrics = await page.evaluate(() => {
     const searchBox = document.querySelector('.search-box').getBoundingClientRect();
     const content = document.querySelector('.content').getBoundingClientRect();
-    const first = document.querySelector('.shortcut-card:nth-child(1)').getBoundingClientRect();
-    const second = document.querySelector('.shortcut-card:nth-child(2)').getBoundingClientRect();
-    const ninth = document.querySelector('.shortcut-card:nth-child(9)').getBoundingClientRect();
-    const thirtySecond = document.querySelector('.shortcut-card:nth-child(32)').getBoundingClientRect();
-    const pageStyle = getComputedStyle(document.querySelector('.shortcut-page'));
+    const activePage = document.querySelector('.shortcut-page.is-active');
+    const first = activePage.querySelector('.shortcut-card:nth-child(1)').getBoundingClientRect();
+    const second = activePage.querySelector('.shortcut-card:nth-child(2)').getBoundingClientRect();
+    const ninth = activePage.querySelector('.shortcut-card:nth-child(9)').getBoundingClientRect();
+    const thirtySecond = activePage.querySelector('.shortcut-card:nth-child(32)').getBoundingClientRect();
+    const pageStyle = getComputedStyle(activePage);
     const settingsMenu = document.querySelector('.settings-menu').getBoundingClientRect();
     const settingsTriggerStyle = getComputedStyle(document.querySelector('.settings-trigger'));
     const settingsPanelStyle = getComputedStyle(document.querySelector('.settings-panel'));
