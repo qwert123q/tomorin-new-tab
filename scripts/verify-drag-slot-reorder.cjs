@@ -56,7 +56,7 @@ async function assertScrollSnapPager(page, expectedPage) {
 
 async function assertFastPageSwitch(page, targetPage) {
   await page.click(`[data-action="go-page"][data-page="${targetPage}"]`);
-  await page.waitForTimeout(130);
+  await page.waitForTimeout(80);
   const result = await page.evaluate(pageIndex => {
     const viewport = document.querySelector('.shortcut-viewport');
     return {
