@@ -1,4 +1,5 @@
 const path = require('path');
+const fs = require('fs');
 const { chromium } = require('playwright');
 
 const chromePath = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
@@ -34,6 +35,22 @@ function assert(condition, message) {
   });
 
   await page.goto(pageUrl, { waitUntil: 'domcontentloaded' });
+
+  const normalShortcutGeometry = await page.$$eval('.shortcut-card', cards => cards.map(card => {
+    const icon = card.querySelector('.shortcut-icon');
+    const title = card.querySelector('.shortcut-title');
+    const cardRect = card.getBoundingClientRect();
+    const iconRect = icon.getBoundingClientRect();
+    const titleRect = title.getBoundingClientRect();
+    return {
+      id: card.dataset.id,
+      cardHeight: cardRect.height,
+      iconCenterX: iconRect.left + iconRect.width / 2,
+      iconCenterY: iconRect.top + iconRect.height / 2,
+      titleCenterX: titleRect.left + titleRect.width / 2,
+      titleCenterY: titleRect.top + titleRect.height / 2,
+    };
+  }));
 
   const removedControls = await page.evaluate(() => ({
     editButton: Boolean(document.querySelector('[data-action="toggle-edit"]')),
@@ -78,6 +95,42 @@ function assert(condition, message) {
 
   await page.click('[data-action="close-dialog"]');
   await page.waitForFunction(() => !document.querySelector('#shortcutDialog').open);
+  await page.addStyleTag({ content: '.edit-mode .shortcut-card .shortcut-icon { animation: none !important; }' });
+  const editShortcutGeometry = await page.$$eval('.shortcut-card', cards => cards.map(card => {
+    const icon = card.querySelector('.shortcut-icon');
+    const title = card.querySelector('.shortcut-title');
+    const cardRect = card.getBoundingClientRect();
+    const iconRect = icon.getBoundingClientRect();
+    const titleRect = title.getBoundingClientRect();
+    return {
+      id: card.dataset.id,
+      cardHeight: cardRect.height,
+      iconCenterX: iconRect.left + iconRect.width / 2,
+      iconCenterY: iconRect.top + iconRect.height / 2,
+      titleCenterX: titleRect.left + titleRect.width / 2,
+      titleCenterY: titleRect.top + titleRect.height / 2,
+    };
+  }));
+  const maxEditShift = normalShortcutGeometry.reduce((maxShift, normal, index) => {
+    const edit = editShortcutGeometry[index];
+    assert(edit?.id === normal.id, `edit geometry should preserve shortcut order, got ${edit?.id} after ${normal.id}`);
+    return Math.max(
+      maxShift,
+      Math.abs(edit.cardHeight - normal.cardHeight),
+      Math.abs(edit.iconCenterX - normal.iconCenterX),
+      Math.abs(edit.iconCenterY - normal.iconCenterY),
+      Math.abs(edit.titleCenterX - normal.titleCenterX),
+      Math.abs(edit.titleCenterY - normal.titleCenterY),
+    );
+  }, 0);
+  assert(maxEditShift <= 0.5, `edit mode should not shift shortcut icon/title geometry, max shift ${maxEditShift.toFixed(2)}px`);
+  const cssText = fs.readFileSync(path.resolve(__dirname, '../extension/style.css'), 'utf8');
+  const wiggleStart = cssText.indexOf('@keyframes shortcut-wiggle');
+  const wiggleEnd = cssText.indexOf('@keyframes shortcut-pop', wiggleStart);
+  const wiggleRule = cssText.slice(wiggleStart, wiggleEnd);
+  assert(wiggleStart !== -1 && wiggleEnd !== -1, 'shortcut wiggle keyframes should exist');
+  assert(!wiggleRule.includes('translate'), 'shortcut wiggle animation should not translate icons away from their normal center');
+
   await page.click('[data-action="add-shortcut"]');
   await page.waitForFunction(() => document.querySelector('#shortcutDialog').open);
   const addTitle = await page.$eval('#dialogTitle', node => node.textContent.trim());
