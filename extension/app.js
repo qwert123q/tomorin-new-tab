@@ -7,6 +7,7 @@ const WALLPAPER_STORE = 'wallpapers';
 const ICON_STORE = 'icons';
 const WALLPAPER_ID = 'current';
 const PAGE_CAPACITY = 32;
+const PAGE_SCROLL_DURATION_MS = 90;
 const SYNC_SCHEMA_VERSION = 1;
 const SYNC_STARTUP_MIN_INTERVAL_MS = 5 * 60 * 1000;
 const SYNC_REQUEST_TIMEOUT_MS = 3500;
@@ -91,6 +92,7 @@ let toastTimer = null;
 let touchStartX = 0;
 let movedShortcutId = null;
 let pageScrollTimer = null;
+let pageScrollAnimation = 0;
 let suppressScrollState = false;
 let pendingCustomIcon = '';
 let pendingIconUrl = '';
@@ -1206,11 +1208,42 @@ async function goToPage(page) {
 
 function scrollToShortcutPage(page, { smooth = false } = {}) {
   const left = clampPage(page) * els.shortcutViewport.clientWidth;
+  cancelAnimationFrame(pageScrollAnimation);
+  pageScrollAnimation = 0;
   suppressScrollState = true;
-  els.shortcutViewport.scrollTo({ left, behavior: smooth ? 'smooth' : 'auto' });
-  requestAnimationFrame(() => {
+
+  if (!smooth) {
+    els.shortcutViewport.scrollLeft = left;
+    requestAnimationFrame(() => {
+      suppressScrollState = false;
+    });
+    return;
+  }
+
+  const startLeft = els.shortcutViewport.scrollLeft;
+  const distance = left - startLeft;
+  if (Math.abs(distance) <= 2) {
+    els.shortcutViewport.scrollLeft = left;
+    requestAnimationFrame(() => {
+      suppressScrollState = false;
+    });
+    return;
+  }
+
+  const startTime = performance.now();
+  const animate = now => {
+    const progress = Math.min(1, (now - startTime) / PAGE_SCROLL_DURATION_MS);
+    const eased = 1 - Math.pow(1 - progress, 3);
+    els.shortcutViewport.scrollLeft = startLeft + distance * eased;
+    if (progress < 1) {
+      pageScrollAnimation = requestAnimationFrame(animate);
+      return;
+    }
+    els.shortcutViewport.scrollLeft = left;
+    pageScrollAnimation = 0;
     suppressScrollState = false;
-  });
+  };
+  pageScrollAnimation = requestAnimationFrame(animate);
 }
 
 function handleShortcutScroll() {

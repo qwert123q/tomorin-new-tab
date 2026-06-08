@@ -54,6 +54,24 @@ async function assertScrollSnapPager(page, expectedPage) {
   assert(Math.abs(pager.scrollLeft - pager.viewportWidth * expectedPage) <= 2, `viewport should scroll to page ${expectedPage}, got ${JSON.stringify(pager)}`);
 }
 
+async function assertFastPageSwitch(page, targetPage) {
+  await page.click(`[data-action="go-page"][data-page="${targetPage}"]`);
+  await page.waitForTimeout(130);
+  const result = await page.evaluate(pageIndex => {
+    const viewport = document.querySelector('.shortcut-viewport');
+    return {
+      activePage: document.querySelector('.shortcut-page.is-active')?.dataset.page,
+      scrollLeft: viewport.scrollLeft,
+      expectedLeft: viewport.clientWidth * pageIndex,
+    };
+  }, targetPage);
+  assert(result.activePage === String(targetPage), `active page should switch immediately to ${targetPage}, got ${result.activePage}`);
+  assert(
+    Math.abs(result.scrollLeft - result.expectedLeft) <= 2,
+    `page switch should finish quickly, got ${JSON.stringify(result)}`,
+  );
+}
+
 (async () => {
   const browser = await chromium.launch({
     headless: true,
@@ -86,6 +104,8 @@ async function assertScrollSnapPager(page, expectedPage) {
   const slotCount = await page.$$eval('.shortcut-page.is-active .shortcut-slot', slots => slots.length);
   assert(slotCount === 32, `edit mode should render 32 drop slots, got ${slotCount}`);
   await assertScrollSnapPager(page, 0);
+  await assertFastPageSwitch(page, 1);
+  await assertFastPageSwitch(page, 0);
 
   await page.evaluate(() => {
     document.querySelector('.shortcut-viewport').scrollLeft = document.querySelector('.shortcut-viewport').clientWidth;
