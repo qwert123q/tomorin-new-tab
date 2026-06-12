@@ -42,7 +42,7 @@ function assert(condition, message) {
   const labels = await page.$$eval('.search-box [data-action="set-search-engine"]', buttons => (
     buttons.map(button => button.textContent.trim())
   ));
-  assert(JSON.stringify(labels) === JSON.stringify(['T', 'b']), `search bar search engine buttons should be T/b, got ${labels.join(',')}`);
+  assert(JSON.stringify(labels) === JSON.stringify(['C', 'b']), `search bar search engine buttons should be C/b, got ${labels.join(',')}`);
 
   const activeAtStart = await page.$eval('.search-box [data-action="set-search-engine"][aria-pressed="true"]', button => button.dataset.searchEngine);
   assert(activeAtStart === 'default', `default search engine should be browser default, got ${activeAtStart}`);
