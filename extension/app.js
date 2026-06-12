@@ -13,6 +13,7 @@ const SYNC_STARTUP_MIN_INTERVAL_MS = 5 * 60 * 1000;
 const SYNC_REQUEST_TIMEOUT_MS = 3500;
 const SYNC_DEBOUNCE_MS = 900;
 const DEFAULT_SHORTCUT_UPDATED_AT = 1700000000000;
+const SEARCH_ENGINES = new Set(['default', 'bing']);
 
 const DEFAULT_SHORTCUTS = [
   { title: 'YouTube', url: 'https://www.youtube.com', size: 'small' },
@@ -36,6 +37,7 @@ const DEFAULT_STATE = {
     currentPage: 0,
     wallpaper: { type: 'none' },
     iconDensity: 'small',
+    searchEngine: 'default',
   },
   sync: {
     enabled: false,
@@ -62,6 +64,7 @@ const els = {
   pageDots: document.getElementById('pageDots'),
   toolbar: document.querySelector('.toolbar'),
   densityButtons: [...document.querySelectorAll('[data-action="set-density"]')],
+  searchEngineButtons: [...document.querySelectorAll('[data-action="set-search-engine"]')],
   wallpaperInput: document.getElementById('wallpaperInput'),
   syncDialog: document.getElementById('syncDialog'),
   syncForm: document.getElementById('syncForm'),
@@ -190,6 +193,7 @@ function normalizeState(saved) {
     iconDensity: ['small', 'medium', 'large'].includes(saved.settings?.iconDensity)
       ? saved.settings.iconDensity
       : 'small',
+    searchEngine: normalizeSearchEngine(saved.settings?.searchEngine),
   };
 
   const sync = {
@@ -282,6 +286,7 @@ function render() {
   state.settings.currentPage = clampPage(state.settings.currentPage);
   els.shell.classList.toggle('edit-mode', editMode);
   applyDensity();
+  applySearchEngineControl();
   renderShortcuts();
   renderDots();
   els.emptyState.hidden = state.shortcuts.length > 0;
@@ -295,6 +300,13 @@ function applyDensity() {
   els.shell.classList.toggle('density-large', density === 'large');
   els.densityButtons.forEach(button => {
     button.setAttribute('aria-pressed', String(button.dataset.density === density));
+  });
+}
+
+function applySearchEngineControl() {
+  const searchEngine = normalizeSearchEngine(state.settings.searchEngine);
+  els.searchEngineButtons.forEach(button => {
+    button.setAttribute('aria-pressed', String(button.dataset.searchEngine === searchEngine));
   });
 }
 
@@ -492,15 +504,26 @@ async function handleSearch(event) {
     return;
   }
 
+  if (normalizeSearchEngine(state.settings.searchEngine) === 'bing') {
+    window.location.href = searchUrl('bing', raw);
+    return;
+  }
+
   try {
     if (hasChromeSearch) {
       await chrome.search.query({ text: raw, disposition: 'CURRENT_TAB' });
     } else {
-      window.location.href = `https://www.google.com/search?q=${encodeURIComponent(raw)}`;
+      window.location.href = searchUrl('google', raw);
     }
   } catch {
-    window.location.href = `https://www.google.com/search?q=${encodeURIComponent(raw)}`;
+    window.location.href = searchUrl('google', raw);
   }
+}
+
+function searchUrl(engine, query) {
+  const url = new URL(engine === 'bing' ? 'https://www.bing.com/search' : 'https://www.google.com/search');
+  url.searchParams.set('q', query);
+  return url.toString();
 }
 
 function looksLikeUrl(value) {
@@ -606,6 +629,11 @@ async function handleDocumentClick(event) {
     return;
   }
 
+  if (action === 'set-search-engine') {
+    await setSearchEngine(actionTarget.dataset.searchEngine);
+    return;
+  }
+
   if (action === 'reset-wallpaper') {
     await resetWallpaper();
   }
@@ -644,6 +672,22 @@ async function setDensity(density) {
 
 function densityLabel(density) {
   return { small: '小', medium: '中', large: '大' }[density] || '小';
+}
+
+async function setSearchEngine(searchEngine) {
+  const nextEngine = normalizeSearchEngine(searchEngine);
+  state.settings.searchEngine = nextEngine;
+  await saveState();
+  applySearchEngineControl();
+  showToast(`搜索：${searchEngineLabel(nextEngine)}`);
+}
+
+function searchEngineLabel(searchEngine) {
+  return { default: '默认', bing: 'Bing' }[normalizeSearchEngine(searchEngine)];
+}
+
+function normalizeSearchEngine(searchEngine) {
+  return SEARCH_ENGINES.has(searchEngine) ? searchEngine : 'default';
 }
 
 function openShortcutDialog(id = null) {
@@ -1551,6 +1595,7 @@ function exportSyncPayload(sourceState) {
       iconDensity: ['small', 'medium', 'large'].includes(sourceState.settings?.iconDensity)
         ? sourceState.settings.iconDensity
         : 'small',
+      searchEngine: normalizeSearchEngine(sourceState.settings?.searchEngine),
     },
   };
 }
@@ -1616,6 +1661,14 @@ async function applyRemoteSyncPayload(payload) {
     changed = true;
   }
 
+  const remoteSearchEngine = payload.settings?.searchEngine;
+  if (SEARCH_ENGINES.has(remoteSearchEngine)) {
+    if (state.settings.searchEngine !== remoteSearchEngine) {
+      state.settings.searchEngine = remoteSearchEngine;
+      changed = true;
+    }
+  }
+
   if (changed) {
     state.shortcuts = orderedShortcutsFrom(nextShortcuts)
       .filter(item => !isShortcutDeleted(item, state.deletedShortcuts))
@@ -1675,7 +1728,10 @@ function sameSyncPayload(left, right) {
       updatedAt: item.updatedAt || DEFAULT_SHORTCUT_UPDATED_AT,
     })),
     deletedShortcuts: normalizeDeletedShortcuts(payload.deletedShortcuts),
-    settings: { iconDensity: payload.settings?.iconDensity || 'small' },
+    settings: {
+      iconDensity: payload.settings?.iconDensity || 'small',
+      searchEngine: normalizeSearchEngine(payload.settings?.searchEngine),
+    },
   });
   return comparable(left) === comparable(right);
 }

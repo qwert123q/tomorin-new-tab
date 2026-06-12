@@ -552,7 +552,8 @@ button {
   transform: translateY(0) scale(1);
 }
 
-.density-control {
+.density-control,
+.search-engine-control {
   display: flex;
   gap: 2px;
   padding: 4px;
@@ -563,7 +564,8 @@ button {
   backdrop-filter: blur(12px);
 }
 
-.density-control button {
+.density-control button,
+.search-engine-control button {
   min-width: 34px;
   height: 28px;
   border: 0;
@@ -574,7 +576,8 @@ button {
   font-size: 13px;
 }
 
-.density-control button[aria-pressed="true"] {
+.density-control button[aria-pressed="true"],
+.search-engine-control button[aria-pressed="true"] {
   color: #26313d;
   background: rgba(255, 255, 255, 0.92);
 }

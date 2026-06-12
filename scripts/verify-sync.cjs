@@ -42,7 +42,7 @@ function assert(condition, message) {
         },
       ],
       deletedShortcuts: [],
-      settings: { iconDensity: 'medium' },
+      settings: { iconDensity: 'medium', searchEngine: 'bing' },
     };
 
     window.__syncCalls = [];
@@ -85,6 +85,7 @@ function assert(condition, message) {
         currentPage: 0,
         wallpaper: { type: 'none' },
         iconDensity: 'small',
+        searchEngine: 'default',
       },
       sync: {
         enabled: true,
@@ -116,6 +117,7 @@ function assert(condition, message) {
   assert(result.calls.some(call => call.method === 'PUT'), 'sync should PUT merged state');
   assert(result.calls.every(call => call.authorization === 'Bearer secret-token'), 'sync should send bearer token');
   assert(result.state.settings.iconDensity === 'medium', 'sync should merge remote icon density');
+  assert(result.state.settings.searchEngine === 'bing', 'sync should merge remote search engine');
   assert(result.state.shortcuts.length === 2, `expected 2 synced shortcuts, got ${result.state.shortcuts.length}`);
   assert(result.titles.includes('Remote YouTube'), 'page should render merged remote shortcut');
 
@@ -123,6 +125,7 @@ function assert(condition, message) {
     calls: result.calls.map(call => call.method),
     titles: result.titles,
     density: result.state.settings.iconDensity,
+    searchEngine: result.state.settings.searchEngine,
   }, null, 2));
 
   await browser.close();
