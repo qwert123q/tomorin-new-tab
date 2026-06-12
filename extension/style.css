@@ -81,7 +81,7 @@ button {
 
 .search-box {
   display: grid;
-  grid-template-columns: 40px 1fr;
+  grid-template-columns: 76px 1fr;
   align-items: center;
   height: 58px;
   padding: 0 18px;
@@ -90,17 +90,41 @@ button {
   box-shadow: var(--shadow);
 }
 
+.search-engine-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  justify-self: start;
+}
+
 .search-logo {
   display: inline-grid;
   place-items: center;
   width: 24px;
   height: 24px;
+  border: 0;
   border-radius: 9px;
   color: white;
+  cursor: pointer;
   font-size: 14px;
   font-weight: 800;
   background: linear-gradient(135deg, #29a5ff, #1a55e8 54%, #57e0c0);
-  justify-self: start;
+  opacity: 0.48;
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.search-logo[aria-pressed="true"] {
+  opacity: 1;
+  transform: scale(1.04);
+}
+
+.search-logo:hover,
+.search-logo:focus-visible {
+  opacity: 1;
+}
+
+.bing-logo {
+  background: linear-gradient(135deg, #00a3ee, #0078d4 52%, #15c6a3);
 }
 
 .search-box input {
@@ -552,8 +576,7 @@ button {
   transform: translateY(0) scale(1);
 }
 
-.density-control,
-.search-engine-control {
+.density-control {
   display: flex;
   gap: 2px;
   padding: 4px;
@@ -564,8 +587,7 @@ button {
   backdrop-filter: blur(12px);
 }
 
-.density-control button,
-.search-engine-control button {
+.density-control button {
   min-width: 34px;
   height: 28px;
   border: 0;
@@ -576,8 +598,7 @@ button {
   font-size: 13px;
 }
 
-.density-control button[aria-pressed="true"],
-.search-engine-control button[aria-pressed="true"] {
+.density-control button[aria-pressed="true"] {
   color: #26313d;
   background: rgba(255, 255, 255, 0.92);
 }
@@ -904,7 +925,7 @@ button {
   }
 
   .search-box {
-    grid-template-columns: 38px 1fr;
+    grid-template-columns: 72px 1fr;
     height: 56px;
     padding: 0 18px;
   }

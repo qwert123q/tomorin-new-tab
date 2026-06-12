@@ -677,7 +677,7 @@ function densityLabel(density) {
 async function setSearchEngine(searchEngine) {
   const nextEngine = normalizeSearchEngine(searchEngine);
   state.settings.searchEngine = nextEngine;
-  await saveState();
+  await saveState({ sync: false });
   applySearchEngineControl();
   showToast(`搜索：${searchEngineLabel(nextEngine)}`);
 }
@@ -1595,7 +1595,6 @@ function exportSyncPayload(sourceState) {
       iconDensity: ['small', 'medium', 'large'].includes(sourceState.settings?.iconDensity)
         ? sourceState.settings.iconDensity
         : 'small',
-      searchEngine: normalizeSearchEngine(sourceState.settings?.searchEngine),
     },
   };
 }
@@ -1661,14 +1660,6 @@ async function applyRemoteSyncPayload(payload) {
     changed = true;
   }
 
-  const remoteSearchEngine = payload.settings?.searchEngine;
-  if (SEARCH_ENGINES.has(remoteSearchEngine)) {
-    if (state.settings.searchEngine !== remoteSearchEngine) {
-      state.settings.searchEngine = remoteSearchEngine;
-      changed = true;
-    }
-  }
-
   if (changed) {
     state.shortcuts = orderedShortcutsFrom(nextShortcuts)
       .filter(item => !isShortcutDeleted(item, state.deletedShortcuts))
@@ -1730,7 +1721,6 @@ function sameSyncPayload(left, right) {
     deletedShortcuts: normalizeDeletedShortcuts(payload.deletedShortcuts),
     settings: {
       iconDensity: payload.settings?.iconDensity || 'small',
-      searchEngine: normalizeSearchEngine(payload.settings?.searchEngine),
     },
   });
   return comparable(left) === comparable(right);

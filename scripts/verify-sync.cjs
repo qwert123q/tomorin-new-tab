@@ -117,7 +117,9 @@ function assert(condition, message) {
   assert(result.calls.some(call => call.method === 'PUT'), 'sync should PUT merged state');
   assert(result.calls.every(call => call.authorization === 'Bearer secret-token'), 'sync should send bearer token');
   assert(result.state.settings.iconDensity === 'medium', 'sync should merge remote icon density');
-  assert(result.state.settings.searchEngine === 'bing', 'sync should merge remote search engine');
+  assert(result.state.settings.searchEngine === 'default', 'sync should keep search engine local-only');
+  const putBody = JSON.parse(result.calls.find(call => call.method === 'PUT').body);
+  assert(!('searchEngine' in putBody.settings), 'sync payload should not include local search engine');
   assert(result.state.shortcuts.length === 2, `expected 2 synced shortcuts, got ${result.state.shortcuts.length}`);
   assert(result.titles.includes('Remote YouTube'), 'page should render merged remote shortcut');
 
@@ -126,6 +128,7 @@ function assert(condition, message) {
     titles: result.titles,
     density: result.state.settings.iconDensity,
     searchEngine: result.state.settings.searchEngine,
+    syncedSearchEngine: putBody.settings.searchEngine || null,
   }, null, 2));
 
   await browser.close();

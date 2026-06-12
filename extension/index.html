@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Tomorin New Tab</title>
-  <link rel="stylesheet" href="style.css?v=0.1.39">
+  <link rel="stylesheet" href="style.css?v=0.1.40">
 </head>
 <body>
   <main class="newtab-shell">
@@ -12,10 +12,13 @@
 
     <section class="content" aria-label="New tab dashboard">
       <form class="search-panel" id="searchForm" autocomplete="off">
-        <label class="search-box" for="searchInput">
-          <span class="search-logo">T</span>
+        <div class="search-box">
+          <div class="search-engine-toggle" aria-label="搜索引擎">
+            <button class="search-logo" type="button" data-action="set-search-engine" data-search-engine="default" aria-pressed="true" title="浏览器默认搜索">T</button>
+            <button class="search-logo bing-logo" type="button" data-action="set-search-engine" data-search-engine="bing" aria-pressed="false" title="Bing 搜索">b</button>
+          </div>
           <input id="searchInput" type="text" placeholder="输入并搜索" spellcheck="false">
-        </label>
+        </div>
       </form>
 
       <section class="shortcut-area" aria-label="Favorite websites">
@@ -40,11 +43,6 @@
           <button type="button" data-action="set-density" data-density="small" aria-pressed="true">小</button>
           <button type="button" data-action="set-density" data-density="medium" aria-pressed="false">中</button>
           <button type="button" data-action="set-density" data-density="large" aria-pressed="false">大</button>
-        </div>
-
-        <div class="search-engine-control" aria-label="搜索引擎">
-          <button type="button" data-action="set-search-engine" data-search-engine="default" aria-pressed="true">默认</button>
-          <button type="button" data-action="set-search-engine" data-search-engine="bing" aria-pressed="false">Bing</button>
         </div>
 
         <div class="toolbar" aria-label="Page controls">
@@ -144,6 +142,6 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-  <script src="app.js?v=0.1.39"></script>
+  <script src="app.js?v=0.1.40"></script>
 </body>
 </html>
