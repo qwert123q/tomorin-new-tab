@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Tomorin New Tab</title>
-  <link rel="stylesheet" href="style.css?v=0.1.41">
+  <link rel="stylesheet" href="style.css?v=0.1.45">
 </head>
 <body>
   <main class="newtab-shell">
@@ -14,10 +14,25 @@
       <form class="search-panel" id="searchForm" autocomplete="off">
         <div class="search-box">
           <div class="search-engine-toggle" aria-label="搜索引擎">
-            <button class="search-logo" type="button" data-action="set-search-engine" data-search-engine="default" aria-pressed="true" title="浏览器默认搜索">C</button>
-            <button class="search-logo bing-logo" type="button" data-action="set-search-engine" data-search-engine="bing" aria-pressed="false" title="Bing 搜索">b</button>
+            <button class="search-logo google-logo" id="searchEngineButton" type="button" data-action="toggle-search-engine" data-search-engine="google" aria-label="当前搜索引擎：Google，点击切换到 Bing" title="Google 搜索">G</button>
           </div>
-          <input id="searchInput" type="text" placeholder="输入并搜索" spellcheck="false">
+          <input id="searchInput" type="text" placeholder="输入并搜索" spellcheck="false" aria-controls="searchHistoryPanel" aria-expanded="false">
+        </div>
+        <div class="search-history-panel" id="searchHistoryPanel" hidden>
+          <div class="search-history-head">
+            <span>搜索历史</span>
+            <label>
+              自动清理
+              <select id="searchHistoryRetention">
+                <option value="0">从不</option>
+                <option value="-1">重启</option>
+                <option value="1">1 天</option>
+                <option value="7">7 天</option>
+              </select>
+            </label>
+          </div>
+          <div class="search-history-list" id="searchHistoryList"></div>
+          <button class="history-expand-button" type="button" data-action="toggle-search-history" hidden>展开历史</button>
         </div>
       </form>
 
@@ -142,6 +157,6 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-  <script src="app.js?v=0.1.41"></script>
+  <script src="app.js?v=0.1.45"></script>
 </body>
 </html>

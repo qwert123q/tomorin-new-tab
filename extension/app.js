@@ -13,7 +13,10 @@ const SYNC_STARTUP_MIN_INTERVAL_MS = 5 * 60 * 1000;
 const SYNC_REQUEST_TIMEOUT_MS = 3500;
 const SYNC_DEBOUNCE_MS = 900;
 const DEFAULT_SHORTCUT_UPDATED_AT = 1700000000000;
-const SEARCH_ENGINES = new Set(['default', 'bing']);
+const SEARCH_ENGINES = new Set(['google', 'bing']);
+const SEARCH_HISTORY_LIMIT = 40;
+const SEARCH_HISTORY_RETENTION_DAYS = new Set([-1, 0, 1, 7]);
+const SEARCH_HISTORY_RESTART_SESSION_KEY = 'tomorinSearchHistoryRestartHandled';
 
 const DEFAULT_SHORTCUTS = [
   { title: 'YouTube', url: 'https://www.youtube.com', size: 'small' },
@@ -37,7 +40,9 @@ const DEFAULT_STATE = {
     currentPage: 0,
     wallpaper: { type: 'none' },
     iconDensity: 'small',
-    searchEngine: 'default',
+    searchEngine: 'google',
+    searchHistory: [],
+    searchHistoryRetentionDays: 0,
   },
   sync: {
     enabled: false,
@@ -50,14 +55,19 @@ const DEFAULT_STATE = {
 };
 
 const hasChromeStorage = Boolean(globalThis.chrome?.storage?.local);
+const hasChromeSessionStorage = Boolean(globalThis.chrome?.storage?.session);
 const hasChromeRuntime = Boolean(globalThis.chrome?.runtime?.getURL);
-const hasChromeSearch = Boolean(globalThis.chrome?.search?.query);
 
 const els = {
   body: document.body,
   shell: document.querySelector('.newtab-shell'),
   searchForm: document.getElementById('searchForm'),
   searchInput: document.getElementById('searchInput'),
+  searchEngineButton: document.getElementById('searchEngineButton'),
+  searchHistoryPanel: document.getElementById('searchHistoryPanel'),
+  searchHistoryList: document.getElementById('searchHistoryList'),
+  searchHistoryRetention: document.getElementById('searchHistoryRetention'),
+  searchHistoryToggle: document.querySelector('[data-action="toggle-search-history"]'),
   shortcutViewport: document.getElementById('shortcutViewport'),
   shortcutPages: document.getElementById('shortcutPages'),
   emptyState: document.getElementById('emptyState'),
@@ -103,6 +113,7 @@ let pendingIconCleared = false;
 let pendingOriginalUrl = '';
 let syncTimer = null;
 let syncInFlight = false;
+let searchHistoryExpanded = false;
 const activeIconUrls = new Map();
 const iconCacheInFlight = new Set();
 const pageIconCandidateCache = new Map();
@@ -112,6 +123,7 @@ init();
 
 async function init() {
   state = await loadState();
+  if (await applySearchHistoryRetention()) await saveState({ sync: false });
   await hydrateShortcutIcons();
   await applyWallpaper();
   bindEvents();
@@ -122,6 +134,9 @@ async function init() {
 
 function bindEvents() {
   els.searchForm.addEventListener('submit', handleSearch);
+  els.searchInput.addEventListener('focus', () => setSearchHistoryPanelOpen(true));
+  els.searchInput.addEventListener('input', () => setSearchHistoryPanelOpen(true));
+  els.searchHistoryRetention.addEventListener('change', handleSearchHistoryRetentionChange);
   document.addEventListener('click', handleDocumentClick);
   els.shortcutForm.addEventListener('submit', handleShortcutSubmit);
   els.syncForm.addEventListener('submit', handleSyncSubmit);
@@ -194,6 +209,8 @@ function normalizeState(saved) {
       ? saved.settings.iconDensity
       : 'small',
     searchEngine: normalizeSearchEngine(saved.settings?.searchEngine),
+    searchHistory: normalizeSearchHistory(saved.settings?.searchHistory),
+    searchHistoryRetentionDays: normalizeSearchHistoryRetention(saved.settings?.searchHistoryRetentionDays),
   };
 
   const sync = {
@@ -221,6 +238,33 @@ function normalizeDeletedShortcuts(deletedShortcuts) {
     .slice(0, 300);
 }
 
+function normalizeSearchHistory(history) {
+  if (!Array.isArray(history)) return [];
+  const seen = new Set();
+  return history
+    .map(item => {
+      const query = typeof item === 'string'
+        ? item.trim()
+        : String(item?.query || '').trim();
+      const searchedAt = Number.isFinite(item?.searchedAt) ? item.searchedAt : Date.now();
+      return { query, searchedAt };
+    })
+    .filter(item => item.query)
+    .filter(item => {
+      const key = item.query.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .sort((a, b) => b.searchedAt - a.searchedAt)
+    .slice(0, SEARCH_HISTORY_LIMIT);
+}
+
+function normalizeSearchHistoryRetention(days) {
+  const value = Number(days);
+  return SEARCH_HISTORY_RETENTION_DAYS.has(value) ? value : 0;
+}
+
 function isShortcutDeleted(item, deletedShortcuts = state.deletedShortcuts || []) {
   const tombstone = deletedShortcuts.find(deleted => (
     deleted.id === item.id || (deleted.url && shortcutUrlKey(deleted.url) === shortcutUrlKey(item.url))
@@ -231,6 +275,8 @@ function isShortcutDeleted(item, deletedShortcuts = state.deletedShortcuts || []
 async function saveState(options = {}) {
   state.shortcuts = orderedShortcuts().map((item, index) => ({ ...item, order: index }));
   state.deletedShortcuts = normalizeDeletedShortcuts(state.deletedShortcuts);
+  state.settings.searchHistory = normalizeSearchHistory(state.settings.searchHistory);
+  state.settings.searchHistoryRetentionDays = normalizeSearchHistoryRetention(state.settings.searchHistoryRetentionDays);
   state.settings.currentPage = clampPage(state.settings.currentPage);
   await persistState(state);
   if (options.sync !== false) scheduleSync('save');
@@ -287,6 +333,7 @@ function render() {
   els.shell.classList.toggle('edit-mode', editMode);
   applyDensity();
   applySearchEngineControl();
+  renderSearchHistory();
   renderShortcuts();
   renderDots();
   els.emptyState.hidden = state.shortcuts.length > 0;
@@ -305,9 +352,35 @@ function applyDensity() {
 
 function applySearchEngineControl() {
   const searchEngine = normalizeSearchEngine(state.settings.searchEngine);
-  els.searchEngineButtons.forEach(button => {
-    button.setAttribute('aria-pressed', String(button.dataset.searchEngine === searchEngine));
-  });
+  if (!els.searchEngineButton) return;
+  const nextEngine = nextSearchEngine(searchEngine);
+  els.searchEngineButton.dataset.searchEngine = searchEngine;
+  els.searchEngineButton.textContent = searchEngine === 'bing' ? 'b' : 'G';
+  els.searchEngineButton.classList.toggle('google-logo', searchEngine === 'google');
+  els.searchEngineButton.classList.toggle('bing-logo', searchEngine === 'bing');
+  els.searchEngineButton.title = `${searchEngineLabel(searchEngine)} 搜索`;
+  els.searchEngineButton.setAttribute('aria-label', `当前搜索引擎：${searchEngineLabel(searchEngine)}，点击切换到 ${searchEngineLabel(nextEngine)}`);
+}
+
+function renderSearchHistory() {
+  if (!els.searchHistoryList) return;
+  const history = normalizeSearchHistory(state.settings.searchHistory);
+  els.searchHistoryList.classList.toggle('expanded', searchHistoryExpanded);
+  els.searchHistoryList.innerHTML = history
+    .map(item => `
+      <button class="search-history-item" type="button" data-action="use-search-history" data-query="${escapeHtml(item.query)}" title="${escapeHtml(item.query)}">
+        <span>${escapeHtml(item.query)}</span>
+        <span class="history-delete" data-action="delete-search-history" data-query="${escapeHtml(item.query)}" aria-label="删除 ${escapeHtml(item.query)}" title="删除">×</span>
+      </button>
+    `)
+    .join('');
+  if (els.searchHistoryToggle) {
+    els.searchHistoryToggle.hidden = history.length <= 4;
+    els.searchHistoryToggle.textContent = searchHistoryExpanded ? '收起历史' : '展开更早历史';
+  }
+  if (els.searchHistoryRetention) {
+    els.searchHistoryRetention.value = String(normalizeSearchHistoryRetention(state.settings.searchHistoryRetentionDays));
+  }
 }
 
 function renderShortcuts() {
@@ -393,7 +466,7 @@ function renderShortcut(item) {
         <img src="${favicon}" alt="" loading="lazy" data-fallbacks="${fallbacks}" data-fallback-index="0">
         <span class="shortcut-edit-marker" aria-hidden="true">✎</span>
       </span>
-      <span class="shortcut-title">${title}</span>
+      <span class="shortcut-title" aria-label="${title}"><span class="shortcut-title-text">${title}</span></span>
     </div>
   `;
 }
@@ -499,6 +572,9 @@ async function handleSearch(event) {
   const raw = els.searchInput.value.trim();
   if (!raw) return;
 
+  await recordSearchHistory(raw);
+  setSearchHistoryPanelOpen(false);
+
   if (looksLikeUrl(raw)) {
     window.location.href = normalizeUrl(raw);
     return;
@@ -509,15 +585,78 @@ async function handleSearch(event) {
     return;
   }
 
-  try {
-    if (hasChromeSearch) {
-      await chrome.search.query({ text: raw, disposition: 'CURRENT_TAB' });
-    } else {
-      window.location.href = searchUrl('google', raw);
-    }
-  } catch {
-    window.location.href = searchUrl('google', raw);
+  window.location.href = searchUrl('google', raw);
+}
+
+async function recordSearchHistory(raw) {
+  const nextHistory = normalizeSearchHistory([
+    { query: raw, searchedAt: Date.now() },
+    ...(state.settings.searchHistory || []),
+  ]);
+  if (JSON.stringify(nextHistory) === JSON.stringify(state.settings.searchHistory || [])) return;
+  state.settings.searchHistory = nextHistory;
+  renderSearchHistory();
+  await saveState({ sync: false });
+}
+
+async function deleteSearchHistoryItem(query) {
+  const key = String(query || '').trim().toLowerCase();
+  if (!key) return;
+  state.settings.searchHistory = normalizeSearchHistory(state.settings.searchHistory)
+    .filter(item => item.query.toLowerCase() !== key);
+  renderSearchHistory();
+  await saveState({ sync: false });
+}
+
+async function handleSearchHistoryRetentionChange() {
+  state.settings.searchHistoryRetentionDays = normalizeSearchHistoryRetention(els.searchHistoryRetention.value);
+  const changed = await applySearchHistoryRetention();
+  renderSearchHistory();
+  await saveState({ sync: false });
+  showToast(changed ? '已清理过期搜索历史' : '已更新历史清理周期');
+}
+
+async function applySearchHistoryRetention() {
+  const retentionDays = normalizeSearchHistoryRetention(state.settings.searchHistoryRetentionDays);
+  if (retentionDays === -1) return clearSearchHistoryAfterBrowserRestart();
+
+  if (!retentionDays) {
+    state.settings.searchHistory = normalizeSearchHistory(state.settings.searchHistory);
+    return false;
   }
+
+  const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+  const before = normalizeSearchHistory(state.settings.searchHistory);
+  const after = before.filter(item => item.searchedAt >= cutoff);
+  state.settings.searchHistory = after;
+  return after.length !== before.length;
+}
+
+async function clearSearchHistoryAfterBrowserRestart() {
+  state.settings.searchHistory = normalizeSearchHistory(state.settings.searchHistory);
+  if (!state.settings.searchHistory.length) return false;
+
+  if (!hasChromeSessionStorage) return false;
+
+  try {
+    const marker = await chrome.storage.session.get(SEARCH_HISTORY_RESTART_SESSION_KEY);
+    if (marker?.[SEARCH_HISTORY_RESTART_SESSION_KEY]) return false;
+    await chrome.storage.session.set({ [SEARCH_HISTORY_RESTART_SESSION_KEY]: true });
+    state.settings.searchHistory = [];
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function setSearchHistoryPanelOpen(open) {
+  if (!els.searchHistoryPanel) return;
+  const hasHistory = normalizeSearchHistory(state.settings.searchHistory).length > 0;
+  const nextOpen = Boolean(open && hasHistory);
+  els.searchHistoryPanel.hidden = !nextOpen;
+  els.searchInput.setAttribute('aria-expanded', String(nextOpen));
+  if (!nextOpen) searchHistoryExpanded = false;
+  renderSearchHistory();
 }
 
 function searchUrl(engine, query) {
@@ -561,16 +700,44 @@ async function handleDocumentClick(event) {
   }
 
   if (!editMode && card && !actionTarget) {
-    window.location.href = card.dataset.url;
+    openShortcutUrl(card.dataset.url);
     return;
   }
 
   if (!actionTarget) {
+    if (!event.target.closest('.search-panel')) setSearchHistoryPanelOpen(false);
     if (editMode && shouldExitEditModeForClick(event)) exitEditMode();
     return;
   }
 
   const { action } = actionTarget.dataset;
+  if (action === 'toggle-search-engine') {
+    await setSearchEngine(nextSearchEngine(state.settings.searchEngine));
+    return;
+  }
+
+  if (action === 'use-search-history') {
+    const query = actionTarget.dataset.query || '';
+    els.searchInput.value = query;
+    setSearchHistoryPanelOpen(false);
+    await handleSearch(new Event('submit'));
+    return;
+  }
+
+  if (action === 'delete-search-history') {
+    event.preventDefault();
+    event.stopPropagation();
+    await deleteSearchHistoryItem(actionTarget.dataset.query);
+    setSearchHistoryPanelOpen(true);
+    return;
+  }
+
+  if (action === 'toggle-search-history') {
+    searchHistoryExpanded = !searchHistoryExpanded;
+    renderSearchHistory();
+    return;
+  }
+
   if (action === 'add-shortcut') {
     if (editMode) event.preventDefault();
     openShortcutDialog();
@@ -629,14 +796,19 @@ async function handleDocumentClick(event) {
     return;
   }
 
-  if (action === 'set-search-engine') {
-    await setSearchEngine(actionTarget.dataset.searchEngine);
-    return;
-  }
-
   if (action === 'reset-wallpaper') {
     await resetWallpaper();
   }
+}
+
+function openShortcutUrl(url) {
+  const opened = window.open(normalizeUrl(url), '_blank', 'noopener,noreferrer');
+  if (opened) {
+    opened.opener = null;
+    return;
+  }
+
+  showToast('Unable to open a new tab');
 }
 
 function shouldExitEditModeForClick(event) {
@@ -683,11 +855,15 @@ async function setSearchEngine(searchEngine) {
 }
 
 function searchEngineLabel(searchEngine) {
-  return { default: '默认', bing: 'Bing' }[normalizeSearchEngine(searchEngine)];
+  return { google: 'Google', bing: 'Bing' }[normalizeSearchEngine(searchEngine)];
+}
+
+function nextSearchEngine(searchEngine) {
+  return normalizeSearchEngine(searchEngine) === 'google' ? 'bing' : 'google';
 }
 
 function normalizeSearchEngine(searchEngine) {
-  return SEARCH_ENGINES.has(searchEngine) ? searchEngine : 'default';
+  return SEARCH_ENGINES.has(searchEngine) ? searchEngine : 'google';
 }
 
 function openShortcutDialog(id = null) {
@@ -1322,7 +1498,7 @@ function handleKeydown(event) {
   const focusedCard = document.activeElement?.closest?.('.shortcut-card');
   if (!editMode && focusedCard && (event.key === 'Enter' || event.key === ' ')) {
     event.preventDefault();
-    window.location.href = focusedCard.dataset.url;
+    openShortcutUrl(focusedCard.dataset.url);
   }
 }
 
