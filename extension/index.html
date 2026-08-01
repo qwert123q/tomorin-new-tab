@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Tomorin New Tab</title>
-  <link rel="stylesheet" href="style.css?v=0.1.41">
+  <link rel="stylesheet" href="style.css?v=0.1.46">
 </head>
 <body>
   <main class="newtab-shell">
@@ -126,10 +126,25 @@
 
       <label class="field">
         <span>访问令牌</span>
-        <input id="syncToken" type="password" autocomplete="off" placeholder="服务器上的 SYNC_TOKEN">
+        <span class="sync-token-input">
+          <input id="syncToken" type="password" autocomplete="off" placeholder="服务器上的 SYNC_TOKEN">
+          <button class="text-button sync-token-action" type="button" data-action="toggle-sync-token" aria-controls="syncToken" aria-pressed="false">显示</button>
+          <button class="text-button sync-token-action" type="button" data-action="copy-sync-token">复制</button>
+        </span>
       </label>
 
       <p class="sync-status" id="syncStatus">未启用</p>
+
+      <section class="wallpaper-sync" aria-labelledby="wallpaperSyncTitle">
+        <div>
+          <strong id="wallpaperSyncTitle">壁纸同步</strong>
+          <p id="wallpaperSyncStatus">壁纸仅在点击按钮时传输，不参与日常轻量同步；单张最大 100 MB。</p>
+        </div>
+        <div class="wallpaper-sync-actions">
+          <button class="text-button" id="uploadWallpaperButton" type="button" data-action="upload-sync-wallpaper">上传本机壁纸</button>
+          <button class="text-button" id="downloadWallpaperButton" type="button" data-action="download-sync-wallpaper">下载云端壁纸</button>
+        </div>
+      </section>
 
       <div class="dialog-actions">
         <button class="text-button" type="button" data-action="sync-now">立即同步</button>
@@ -142,6 +157,6 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-  <script src="app.js?v=0.1.41"></script>
+  <script src="app.js?v=0.1.46"></script>
 </body>
 </html>

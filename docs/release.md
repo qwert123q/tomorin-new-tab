@@ -52,4 +52,6 @@ node scripts/verify-auto-icon-cache.cjs
 node scripts/verify-local-icon-cache.cjs
 node scripts/verify-infinity-import.cjs
 node scripts/verify-wallpaper-quality.cjs
+node scripts/verify-sync.cjs
+node scripts/verify-sync-server.cjs
 ```

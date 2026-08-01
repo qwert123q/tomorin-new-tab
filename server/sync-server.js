@@ -9,7 +9,10 @@ const PORT = Number(process.env.SYNC_PORT || 8787);
 const HOST = process.env.SYNC_HOST || '0.0.0.0';
 const TOKEN = process.env.SYNC_TOKEN || '';
 const DATA_FILE = process.env.SYNC_DATA_FILE || path.join(__dirname, 'data', 'state.json');
-const MAX_BODY_BYTES = 256 * 1024;
+const WALLPAPER_FILE = process.env.SYNC_WALLPAPER_FILE || path.join(path.dirname(DATA_FILE), 'wallpaper.bin');
+const WALLPAPER_META_FILE = `${WALLPAPER_FILE}.json`;
+const MAX_STATE_BYTES = 256 * 1024;
+const MAX_WALLPAPER_BYTES = 100 * 1024 * 1024;
 const EMPTY_STATE = {
   schemaVersion: 1,
   updatedAt: 0,
@@ -34,33 +37,53 @@ const server = http.createServer(async (req, res) => {
 
   try {
     if (req.url === '/health' && req.method === 'GET') {
-      sendJson(res, 200, { ok: true });
+      sendJson(res, 200, {
+        ok: true,
+        capabilities: {
+          wallpaperSync: true,
+          maxWallpaperBytes: MAX_WALLPAPER_BYTES,
+        },
+      });
       return;
     }
 
-    if (!req.url?.startsWith('/api/state')) {
-      sendJson(res, 404, { error: 'not_found' });
-      return;
-    }
-
-    if (!isAuthorized(req)) {
+    if ((req.url === '/api/state' || req.url === '/api/wallpaper') && !isAuthorized(req)) {
       sendJson(res, 401, { error: 'unauthorized' });
       return;
     }
 
-    if (req.method === 'GET') {
+    if (req.url === '/api/state' && req.method === 'GET') {
       sendJson(res, 200, await readState());
       return;
     }
 
-    if (req.method === 'PUT') {
+    if (req.url === '/api/state' && req.method === 'PUT') {
       const payload = validateState(await readJsonBody(req));
       await writeState(payload);
       sendJson(res, 200, { ok: true });
       return;
     }
 
-    sendJson(res, 405, { error: 'method_not_allowed' });
+    if (req.url === '/api/wallpaper' && req.method === 'GET') {
+      await sendWallpaper(res);
+      return;
+    }
+
+    if (req.url === '/api/wallpaper' && req.method === 'PUT') {
+      const contentType = normalizeWallpaperContentType(req.headers['content-type']);
+      const data = await readRequestBody(req, MAX_WALLPAPER_BYTES);
+      if (!data.length) throw httpError(400, 'empty_wallpaper');
+      await writeWallpaper(data, contentType);
+      sendJson(res, 200, { ok: true, size: data.length });
+      return;
+    }
+
+    if (req.url === '/api/state' || req.url === '/api/wallpaper') {
+      sendJson(res, 405, { error: 'method_not_allowed' });
+      return;
+    }
+
+    sendJson(res, 404, { error: 'not_found' });
   } catch (error) {
     const status = error.statusCode || 500;
     sendJson(res, status, { error: status === 500 ? 'server_error' : error.message });
@@ -106,25 +129,75 @@ async function writeState(payload) {
 }
 
 async function readJsonBody(req) {
+  const data = await readRequestBody(req, MAX_STATE_BYTES);
+
+  try {
+    return JSON.parse(data.toString('utf8') || '{}');
+  } catch {
+    throw httpError(400, 'invalid_json');
+  }
+}
+
+async function readRequestBody(req, maxBytes) {
+  const declaredSize = Number(req.headers['content-length'] || 0);
+  if (declaredSize > maxBytes) throw httpError(413, 'payload_too_large');
+
   let size = 0;
   const chunks = [];
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > MAX_BODY_BYTES) {
-      const error = new Error('payload_too_large');
-      error.statusCode = 413;
-      throw error;
-    }
+    if (size > maxBytes) throw httpError(413, 'payload_too_large');
     chunks.push(chunk);
   }
+  return Buffer.concat(chunks);
+}
 
+function normalizeWallpaperContentType(value) {
+  const contentType = String(value || '').split(';', 1)[0].trim().toLowerCase();
+  if (!contentType.startsWith('image/') || contentType === 'image/svg+xml') {
+    throw httpError(415, 'unsupported_wallpaper_type');
+  }
+  return contentType.slice(0, 100);
+}
+
+async function writeWallpaper(data, contentType) {
+  await fs.mkdir(path.dirname(WALLPAPER_FILE), { recursive: true });
+  const suffix = `${process.pid}.tmp`;
+  const wallpaperTmp = `${WALLPAPER_FILE}.${suffix}`;
+  const metaTmp = `${WALLPAPER_META_FILE}.${suffix}`;
+  const meta = { contentType, size: data.length, updatedAt: Date.now() };
+  await fs.writeFile(wallpaperTmp, data, { mode: 0o600 });
+  await fs.writeFile(metaTmp, `${JSON.stringify(meta)}\n`, { mode: 0o600 });
+  await fs.rename(wallpaperTmp, WALLPAPER_FILE);
+  await fs.rename(metaTmp, WALLPAPER_META_FILE);
+}
+
+async function sendWallpaper(res) {
   try {
-    return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
-  } catch {
-    const error = new Error('invalid_json');
-    error.statusCode = 400;
+    const [data, rawMeta] = await Promise.all([
+      fs.readFile(WALLPAPER_FILE),
+      fs.readFile(WALLPAPER_META_FILE, 'utf8'),
+    ]);
+    const meta = JSON.parse(rawMeta);
+    res.writeHead(200, {
+      'Content-Type': normalizeWallpaperContentType(meta.contentType),
+      'Content-Length': data.length,
+      'Cache-Control': 'no-store',
+    });
+    res.end(data);
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      sendJson(res, 404, { error: 'wallpaper_not_found' });
+      return;
+    }
     throw error;
   }
+}
+
+function httpError(statusCode, message) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
 }
 
 function validateState(payload) {

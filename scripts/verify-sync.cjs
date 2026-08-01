@@ -48,15 +48,37 @@ function assert(condition, message) {
     window.__syncCalls = [];
     window.fetch = async (input, options = {}) => {
       const url = typeof input === 'string' ? input : input.url;
-      if (url !== 'http://sync.test:8787/api/state') {
-        return new Response('', { status: 404 });
-      }
-
       window.__syncCalls.push({
+        url,
         method: options.method || 'GET',
         authorization: options.headers?.Authorization,
         body: options.body || '',
       });
+
+      if (url === 'http://sync.test:8787/health') {
+        return new Response(JSON.stringify({
+          ok: true,
+          capabilities: { wallpaperSync: true, maxWallpaperBytes: 100 * 1024 * 1024 },
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      if (url === 'http://sync.test:8787/api/wallpaper') {
+        if ((options.method || 'GET') === 'GET') {
+          return new Response(new Uint8Array([137, 80, 78, 71]), {
+            status: 200,
+            headers: { 'Content-Type': 'image/png' },
+          });
+        }
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      if (url !== 'http://sync.test:8787/api/state') return new Response('', { status: 404 });
 
       if ((options.method || 'GET') === 'GET') {
         return new Response(JSON.stringify(remotePayload), {
@@ -123,12 +145,43 @@ function assert(condition, message) {
   assert(result.state.shortcuts.length === 2, `expected 2 synced shortcuts, got ${result.state.shortcuts.length}`);
   assert(result.titles.includes('Remote YouTube'), 'page should render merged remote shortcut');
 
+  await page.locator('.settings-trigger').hover();
+  await page.locator('[data-action="open-sync-dialog"]').click();
+  await page.locator('[data-action="toggle-sync-token"]').click();
+  assert(await page.locator('#syncToken').getAttribute('type') === 'text', 'sync token should be revealable');
+  assert(await page.locator('#syncToken').inputValue() === 'secret-token', 'revealed sync token should keep its value');
+  await page.locator('[data-action="toggle-sync-token"]').click();
+  assert(await page.locator('#syncToken').getAttribute('type') === 'password', 'sync token should be hideable again');
+
+  await page.evaluate(async () => {
+    const bytes = new Uint8Array(21 * 1024 * 1024);
+    bytes.set([137, 80, 78, 71]);
+    await saveWallpaperBlob(new Blob([bytes], { type: 'image/png' }));
+  });
+  await page.locator('[data-action="upload-sync-wallpaper"]').click();
+  await page.waitForFunction(() => document.getElementById('wallpaperSyncStatus')?.textContent.includes('已上传'));
+  await page.locator('[data-action="download-sync-wallpaper"]').click();
+  await page.waitForFunction(() => document.getElementById('wallpaperSyncStatus')?.textContent.includes('已下载'));
+
+  const wallpaperResult = await page.evaluate(() => ({
+    calls: window.__syncCalls
+      .filter(call => call.url.endsWith('/api/wallpaper'))
+      .map(call => ({ method: call.method, authorization: call.authorization, size: call.body?.size || 0 })),
+    wallpaperType: state.settings.wallpaper.type,
+  }));
+  assert(wallpaperResult.calls.some(call => call.method === 'PUT'), 'manual wallpaper sync should upload with PUT');
+  assert(wallpaperResult.calls.some(call => call.method === 'GET'), 'manual wallpaper sync should download with GET');
+  assert(wallpaperResult.calls.find(call => call.method === 'PUT').size > 20 * 1024 * 1024, 'wallpaper sync should accept files larger than 20 MB');
+  assert(wallpaperResult.calls.every(call => call.authorization === 'Bearer secret-token'), 'wallpaper sync should send bearer token');
+  assert(wallpaperResult.wallpaperType === 'uploaded', 'downloaded wallpaper should become the active local wallpaper');
+
   console.log(JSON.stringify({
     calls: result.calls.map(call => call.method),
     titles: result.titles,
     density: result.state.settings.iconDensity,
     searchEngine: result.state.settings.searchEngine,
     syncedSearchEngine: putBody.settings.searchEngine || null,
+    wallpaperCalls: wallpaperResult.calls.map(call => call.method),
   }, null, 2));
 
   await browser.close();

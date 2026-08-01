@@ -11,6 +11,8 @@ const PAGE_SCROLL_DURATION_MS = 45;
 const SYNC_SCHEMA_VERSION = 1;
 const SYNC_STARTUP_MIN_INTERVAL_MS = 5 * 60 * 1000;
 const SYNC_REQUEST_TIMEOUT_MS = 3500;
+const WALLPAPER_SYNC_TIMEOUT_MS = 60 * 1000;
+const MAX_SYNC_WALLPAPER_BYTES = 100 * 1024 * 1024;
 const SYNC_DEBOUNCE_MS = 900;
 const DEFAULT_SHORTCUT_UPDATED_AT = 1700000000000;
 const SEARCH_ENGINES = new Set(['default', 'bing']);
@@ -72,6 +74,9 @@ const els = {
   syncEndpoint: document.getElementById('syncEndpoint'),
   syncToken: document.getElementById('syncToken'),
   syncStatus: document.getElementById('syncStatus'),
+  wallpaperSyncStatus: document.getElementById('wallpaperSyncStatus'),
+  uploadWallpaperButton: document.getElementById('uploadWallpaperButton'),
+  downloadWallpaperButton: document.getElementById('downloadWallpaperButton'),
   dialog: document.getElementById('shortcutDialog'),
   shortcutForm: document.getElementById('shortcutForm'),
   dialogTitle: document.getElementById('dialogTitle'),
@@ -103,6 +108,7 @@ let pendingIconCleared = false;
 let pendingOriginalUrl = '';
 let syncTimer = null;
 let syncInFlight = false;
+let wallpaperSyncInFlight = false;
 const activeIconUrls = new Map();
 const iconCacheInFlight = new Set();
 const pageIconCandidateCache = new Map();
@@ -597,6 +603,26 @@ async function handleDocumentClick(event) {
     return;
   }
 
+  if (action === 'toggle-sync-token') {
+    toggleSyncTokenVisibility(actionTarget);
+    return;
+  }
+
+  if (action === 'copy-sync-token') {
+    await copySyncToken();
+    return;
+  }
+
+  if (action === 'upload-sync-wallpaper') {
+    await uploadWallpaperToSyncServer();
+    return;
+  }
+
+  if (action === 'download-sync-wallpaper') {
+    await downloadWallpaperFromSyncServer();
+    return;
+  }
+
   if (action === 'delete-shortcut') {
     await deleteEditingShortcut();
     return;
@@ -724,13 +750,205 @@ function openSyncDialog() {
   els.syncEnabled.checked = Boolean(sync.enabled);
   els.syncEndpoint.value = sync.endpoint || '';
   els.syncToken.value = sync.token || '';
+  resetSyncTokenVisibility();
+  renderWallpaperSyncStatus();
   renderSyncStatus();
   els.syncDialog.showModal();
   requestAnimationFrame(() => els.syncEndpoint.focus());
 }
 
 function closeSyncDialog() {
+  resetSyncTokenVisibility();
   els.syncDialog.close();
+}
+
+function resetSyncTokenVisibility() {
+  els.syncToken.type = 'password';
+  const button = document.querySelector('[data-action="toggle-sync-token"]');
+  if (!button) return;
+  button.textContent = '显示';
+  button.setAttribute('aria-pressed', 'false');
+}
+
+function toggleSyncTokenVisibility(button) {
+  const visible = els.syncToken.type === 'text';
+  els.syncToken.type = visible ? 'password' : 'text';
+  button.textContent = visible ? '显示' : '隐藏';
+  button.setAttribute('aria-pressed', String(!visible));
+}
+
+async function copySyncToken() {
+  const token = els.syncToken.value.trim();
+  if (!token) {
+    showToast('没有可复制的令牌');
+    return;
+  }
+
+  try {
+    await navigator.clipboard.writeText(token);
+    showToast('令牌已复制');
+  } catch {
+    const originalType = els.syncToken.type;
+    els.syncToken.type = 'text';
+    els.syncToken.select();
+    const copied = document.execCommand('copy');
+    els.syncToken.setSelectionRange(0, 0);
+    els.syncToken.type = originalType;
+    showToast(copied ? '令牌已复制' : '复制失败，请先显示后手动复制');
+  }
+}
+
+function renderWallpaperSyncStatus(message = '') {
+  if (!els.wallpaperSyncStatus) return;
+  els.wallpaperSyncStatus.textContent = message || '壁纸仅在点击按钮时传输，不参与日常轻量同步；单张最大 100 MB。';
+}
+
+function setWallpaperSyncBusy(busy, message = '') {
+  wallpaperSyncInFlight = busy;
+  els.uploadWallpaperButton.disabled = busy;
+  els.downloadWallpaperButton.disabled = busy;
+  if (message) renderWallpaperSyncStatus(message);
+}
+
+async function syncCredentialsFromDialog() {
+  const endpoint = normalizeSyncEndpoint(els.syncEndpoint.value);
+  const token = els.syncToken.value.trim();
+  if (!endpoint || !token) throw new Error('sync-config');
+
+  state.sync = {
+    ...(state.sync || {}),
+    enabled: Boolean(els.syncEnabled.checked),
+    endpoint,
+    token,
+  };
+  await persistState(state);
+  return { endpoint, token };
+}
+
+async function uploadWallpaperToSyncServer() {
+  if (wallpaperSyncInFlight) return;
+
+  try {
+    const { endpoint, token } = await syncCredentialsFromDialog();
+    const wallpaper = await getWallpaperBlob();
+    if (!wallpaper) throw new Error('wallpaper-local-missing');
+    if (wallpaper.size > MAX_SYNC_WALLPAPER_BYTES) throw new Error(`wallpaper-local-too-large:${wallpaper.size}`);
+    if (!wallpaper.type.startsWith('image/')) throw new Error('wallpaper-type');
+
+    setWallpaperSyncBusy(true, '正在上传本机壁纸…');
+    await verifyWallpaperSyncCapability(endpoint, wallpaper.size);
+    await wallpaperSyncRequest('PUT', endpoint, token, wallpaper);
+    renderWallpaperSyncStatus(`本机壁纸已上传（${formatBytes(wallpaper.size)}）。`);
+    showToast('壁纸上传完成');
+  } catch (error) {
+    renderWallpaperSyncStatus(`上传失败：${friendlyWallpaperSyncError(error)}`);
+    showToast('壁纸上传失败');
+  } finally {
+    setWallpaperSyncBusy(false);
+  }
+}
+
+async function downloadWallpaperFromSyncServer() {
+  if (wallpaperSyncInFlight) return;
+
+  try {
+    const { endpoint, token } = await syncCredentialsFromDialog();
+    setWallpaperSyncBusy(true, '正在下载云端壁纸…');
+    await verifyWallpaperSyncCapability(endpoint);
+    const wallpaper = await wallpaperSyncRequest('GET', endpoint, token);
+    if (!wallpaper.size || wallpaper.size > MAX_SYNC_WALLPAPER_BYTES) throw new Error(`wallpaper-local-too-large:${wallpaper.size}`);
+    if (!wallpaper.type.startsWith('image/')) throw new Error('wallpaper-type');
+
+    await saveWallpaperBlob(wallpaper);
+    state.settings.wallpaper = { type: 'uploaded' };
+    await saveState({ sync: false });
+    await applyWallpaper();
+    renderWallpaperSyncStatus(`云端壁纸已下载（${formatBytes(wallpaper.size)}）。`);
+    showToast('壁纸下载完成');
+  } catch (error) {
+    renderWallpaperSyncStatus(`下载失败：${friendlyWallpaperSyncError(error)}`);
+    showToast('壁纸下载失败');
+  } finally {
+    setWallpaperSyncBusy(false);
+  }
+}
+
+async function wallpaperSyncRequest(method, endpoint, token, wallpaper = null) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), WALLPAPER_SYNC_TIMEOUT_MS);
+  try {
+    const response = await fetch(`${endpoint}/api/wallpaper`, {
+      method,
+      cache: 'no-store',
+      credentials: 'omit',
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        ...(wallpaper ? { 'Content-Type': wallpaper.type || 'application/octet-stream' } : {}),
+      },
+      body: wallpaper,
+    });
+
+    if (response.status === 401 || response.status === 403) throw new Error('token');
+    if (response.status === 404) {
+      const payload = await response.clone().json().catch(() => ({}));
+      throw new Error(payload.error === 'wallpaper_not_found' ? 'wallpaper-remote-missing' : 'wallpaper-server-outdated');
+    }
+    if (response.status === 413) throw new Error('wallpaper-server-rejected-size');
+    if (response.status === 415) throw new Error('wallpaper-type');
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return method === 'GET' ? await response.blob() : null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function verifyWallpaperSyncCapability(endpoint, wallpaperSize = 0) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SYNC_REQUEST_TIMEOUT_MS);
+  try {
+    const response = await fetch(`${endpoint}/health`, {
+      cache: 'no-store',
+      credentials: 'omit',
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.json();
+    const capabilities = payload?.capabilities;
+    if (!capabilities?.wallpaperSync) throw new Error('wallpaper-server-outdated');
+
+    const serverLimit = Number(capabilities.maxWallpaperBytes || 0);
+    if (wallpaperSize && serverLimit && wallpaperSize > serverLimit) {
+      throw new Error(`wallpaper-server-limit:${serverLimit}`);
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function friendlyWallpaperSyncError(error) {
+  if (error?.name === 'AbortError') return '服务器响应超时';
+  if (error?.message === 'sync-config') return '请先填写服务器地址和访问令牌';
+  if (error?.message === 'token') return '令牌不正确';
+  if (error?.message === 'wallpaper-local-missing') return '本机还没有设置壁纸';
+  if (error?.message === 'wallpaper-remote-missing') return '云端没有壁纸，或服务器尚未升级';
+  if (error?.message === 'wallpaper-server-outdated') return '同步服务器尚未升级壁纸同步功能';
+  if (error?.message === 'wallpaper-server-rejected-size') return '服务器或代理拒绝了上传（HTTP 413），请检查 Nginx/CDN 的请求大小限制';
+  if (error?.message?.startsWith('wallpaper-local-too-large:')) {
+    const size = Number(error.message.split(':')[1] || 0);
+    return `处理后的壁纸为 ${formatBytes(size)}，超过 100 MB 限制`;
+  }
+  if (error?.message?.startsWith('wallpaper-server-limit:')) {
+    const limit = Number(error.message.split(':')[1] || 0);
+    return `服务器只允许 ${formatBytes(limit)}，请先升级服务器配置`;
+  }
+  if (error?.message === 'wallpaper-type') return '壁纸格式不受支持';
+  return String(error?.message || '网络不可用').slice(0, 120);
+}
+
+function formatBytes(bytes) {
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 async function handleSyncSubmit(event) {
@@ -774,7 +992,7 @@ function renderSyncStatus(override = '') {
 
   const sync = state.sync || {};
   if (!sync.enabled) {
-    els.syncStatus.textContent = '未启用。启用后只同步收藏网站元数据和图标来源，不上传壁纸或图标图片。';
+    els.syncStatus.textContent = '未启用。启用后只自动同步收藏网站元数据和图标来源；壁纸仍需手动传输。';
     return;
   }
 
