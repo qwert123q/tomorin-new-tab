@@ -29,6 +29,7 @@ async function afterContent(page, selector) {
     localStorage.clear();
   });
   await page.goto(pageUrl, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('.shortcut-card');
 
   const shortcutCursor = await page.$eval('.shortcut-card', card => getComputedStyle(card).cursor);
   assert(shortcutCursor === 'pointer', `shortcut cursor should be pointer, got ${shortcutCursor}`);

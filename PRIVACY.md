@@ -2,43 +2,41 @@
 
 Tomorin New Tab is designed as a local-first Chrome new tab extension.
 
-Optional self-hosted sync is disabled by default. When the user enables it, the extension sends shortcut metadata to the server URL configured by the user. Wallpaper images are sent only when the user explicitly clicks the manual upload button.
+Optional self-hosted sync is disabled by default. When the user enables it, the extension exchanges the data listed below with the server URL configured by the user, and with no other server.
 
 ## Data Stored Locally
 
 The extension stores the following data in the current Chrome profile:
 
-- Shortcut titles, URLs, order, and icon settings in `chrome.storage.local`.
-- Uploaded wallpaper images in the extension's IndexedDB database.
-- Saved shortcut icon images in the extension's IndexedDB database.
-- Local UI settings such as icon density and current page.
+- Shortcut titles, URLs, size, order, icon choices and deletion records in `chrome.storage.local`.
+- Local settings such as icon density, search engine, current page and sync settings (server URL and sync password).
+- A backup of the local shortcut list, kept before sync replaces or removes several shortcuts.
+- Uploaded wallpaper images, cached shortcut icon images and uploaded icon images in the extension's IndexedDB database.
 
 This data stays on the user's device and is removed when the extension is removed from Chrome.
 
 ## Network Requests
 
-The extension may make network requests for icon discovery and caching:
+The extension may make network requests to find and cache shortcut icons:
 
-- When a shortcut has no cached icon, the extension may fetch favicon candidates and cache the first working icon locally.
-- When the user adds or edits a shortcut, the extension may fetch that website's page or manifest to discover declared icons and brand images.
-- The extension may request favicon candidates from browser or public favicon endpoints such as Google favicon service or DuckDuckGo favicon service.
+- It may fetch a shortcut website's page, web app manifest and declared icon files, and the same for the site's mobile version (`m.` address) when only small icons are found.
+- It may request icons from browser or public favicon endpoints such as the Google favicon service or the DuckDuckGo favicon service.
 
-These requests are used only to display or cache shortcut icons.
+These requests are used only to display or cache shortcut icons. They are made without cookies.
 
-If optional self-hosted sync is enabled, the extension also sends and receives:
+If optional self-hosted sync is enabled, the extension also sends to and receives from the user's server:
 
-- Shortcut titles, URLs, size, order, and icon source URLs.
-- Shortcut deletion tombstones.
+- Shortcut titles, URLs, size, order, icon choices and deletion records.
 - The icon density setting.
-- A wallpaper image only after the user manually chooses upload or download.
+- The wallpaper image and icon images the user uploaded.
 
-Optional sync does not automatically upload wallpaper image files and never uploads cached shortcut icon image files.
+The search engine choice, current page and cached icon images found automatically are not synced.
 
 ## What This Extension Does Not Do
 
 - It does not require an account.
 - It does not run a remote backend controlled by this project.
-- It does not upload wallpaper images or saved icon images to a project-controlled server. A manually selected wallpaper upload goes only to the user's configured self-hosted server.
+- It does not upload any data to a project-controlled server.
 - It does not sell, share, or broker user data.
 - It does not use analytics, tracking pixels, advertising SDKs, or telemetry.
 
@@ -46,10 +44,10 @@ Optional sync does not automatically upload wallpaper image files and never uplo
 
 The extension uses:
 
-- `storage`: saves shortcut metadata and settings locally.
+- `storage`: saves shortcut data and settings locally.
 - `favicon`: reads Chrome favicon data when available.
 - `search`: sends searches to the user's configured Chrome search provider.
-- `<all_urls>` host permission: allows icon discovery from websites that users choose to add or edit.
+- `<all_urls>` host permission: allows icon discovery from websites that users add, and connecting to the user's own sync server.
 
 ## Contact
 

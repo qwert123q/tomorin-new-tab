@@ -36,22 +36,22 @@ Official references:
 ## Verification Commands
 
 ```bash
-node --check extension/app.js
-for file in scripts/*.cjs; do node --check "$file"; done
+for file in extension/*.js server/*.js scripts/*.cjs; do node --check "$file"; done
 python3 -m json.tool extension/manifest.json >/dev/null
 git diff --check
+```
+
+The sync model and the sync server are tested with plain Node:
+
+```bash
+node scripts/verify-sync-core.cjs
+node scripts/verify-sync-server.cjs
 ```
 
 The browser-based verification scripts require Playwright and Chrome. If Playwright is available on `NODE_PATH`, run:
 
 ```bash
-node scripts/verify-icon-handling.cjs
-node scripts/verify-compact-layout.cjs
-node scripts/verify-density.cjs
-node scripts/verify-auto-icon-cache.cjs
-node scripts/verify-local-icon-cache.cjs
-node scripts/verify-infinity-import.cjs
-node scripts/verify-wallpaper-quality.cjs
-node scripts/verify-sync.cjs
-node scripts/verify-sync-server.cjs
+for file in scripts/verify-*.cjs; do node "$file" || break; done
 ```
+
+`verify-sync.cjs` starts a real sync server and several isolated browser profiles to check first-time setup, concurrent edits, deletes and undo, wallpaper and icon transfer, multiple tabs, and the first-sync choice.

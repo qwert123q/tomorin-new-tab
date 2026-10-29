@@ -36,6 +36,7 @@ function assert(condition, message) {
   });
 
   await page.goto(pageUrl, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('.shortcut-card');
 
   const tabCount = await page.$$eval('.search-tabs span', nodes => nodes.length);
   assert(tabCount === 0, `search category words should be removed, got ${tabCount}`);

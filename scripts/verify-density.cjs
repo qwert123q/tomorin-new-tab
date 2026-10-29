@@ -23,6 +23,7 @@ async function revealSettings(page) {
   await page.goto(pageUrl, { waitUntil: 'domcontentloaded' });
   await page.evaluate(() => localStorage.clear());
   await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('.shortcut-card');
 
   const labels = await page.$$eval('[data-action="set-density"]', buttons => (
     buttons.map(button => button.textContent.trim())
@@ -41,6 +42,7 @@ async function revealSettings(page) {
   assert(mediumWidth > smallWidth, `medium width ${mediumWidth} should be greater than small width ${smallWidth}`);
 
   await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('.shortcut-card');
   const persisted = await page.$eval('[data-action="set-density"][aria-pressed="true"]', button => button.dataset.density);
   assert(persisted === 'medium', 'selected density should persist after reload');
 

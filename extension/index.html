@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Tomorin New Tab</title>
-  <link rel="stylesheet" href="style.css?v=0.1.46">
+  <link rel="stylesheet" href="style.css?v=0.2.0">
 </head>
 <body>
   <main class="newtab-shell">
@@ -34,7 +34,7 @@
 
     <nav class="page-dots" id="pageDots" aria-label="Shortcut pages"></nav>
 
-    <div class="settings-menu" aria-label="Page controls">
+    <div class="settings-menu" aria-label="Page controls" data-alert="false">
       <button class="icon-button settings-trigger" type="button" title="设置">
         <span aria-hidden="true">⚙</span>
       </button>
@@ -50,7 +50,7 @@
             <span aria-hidden="true">◐</span>
             <input id="wallpaperInput" type="file" accept="image/*">
           </label>
-          <button class="icon-button" type="button" data-action="open-sync-dialog" title="同步设置" data-tooltip="同步">
+          <button class="icon-button sync-button" type="button" data-action="open-sync-dialog" title="同步设置" data-tooltip="同步">
             <span aria-hidden="true">⇄</span>
           </button>
           <button class="icon-button" type="button" data-action="reset-wallpaper" title="重置壁纸" data-tooltip="重置壁纸">
@@ -65,37 +65,32 @@
     <form method="dialog" class="dialog-card" id="shortcutForm">
       <div class="dialog-head">
         <h2 id="dialogTitle">添加网站</h2>
-        <button class="icon-button compact" type="button" data-action="close-dialog" title="关闭">×</button>
+        <button class="icon-button compact" type="button" data-action="close-dialog" title="关闭" aria-label="关闭">×</button>
       </div>
 
       <label class="field">
         <span>名称</span>
-        <input id="shortcutTitle" type="text" placeholder="TikTok" required>
+        <input id="shortcutTitle" type="text" placeholder="例如：携程" maxlength="80" required>
       </label>
 
       <label class="field">
         <span>网址</span>
-        <input id="shortcutUrl" type="text" placeholder="tiktok.com" required>
+        <input id="shortcutUrl" type="text" placeholder="例如：ctrip.com" spellcheck="false" required>
       </label>
 
-      <fieldset class="size-field">
+      <fieldset class="field size-field">
         <legend>大小</legend>
-        <label><input type="radio" name="shortcutSize" value="small" checked> 小</label>
-        <label><input type="radio" name="shortcutSize" value="medium"> 中</label>
-        <label><input type="radio" name="shortcutSize" value="large"> 大</label>
+        <div class="segmented">
+          <label><input type="radio" name="shortcutSize" value="small" checked><span>小</span></label>
+          <label><input type="radio" name="shortcutSize" value="medium"><span>中</span></label>
+          <label><input type="radio" name="shortcutSize" value="large"><span>大</span></label>
+        </div>
       </fieldset>
 
       <div class="field">
         <span>图标</span>
-        <div class="icon-picker">
-          <span class="icon-preview" id="shortcutIconPreview"></span>
-          <div class="icon-candidates" id="shortcutIconCandidates"></div>
-          <label class="text-button upload-icon-button">
-            上传
-            <input id="shortcutIconInput" type="file" accept="image/*">
-          </label>
-          <button class="text-button" id="clearShortcutIconButton" type="button" data-action="clear-shortcut-icon">清除</button>
-        </div>
+        <div class="icon-options" id="shortcutIconOptions" aria-label="图标"></div>
+        <input class="visually-hidden" id="shortcutIconInput" type="file" accept="image/*" tabindex="-1">
       </div>
 
       <div class="dialog-actions">
@@ -110,53 +105,80 @@
   <dialog class="shortcut-dialog sync-dialog" id="syncDialog">
     <form method="dialog" class="dialog-card" id="syncForm">
       <div class="dialog-head">
-        <h2>同步设置</h2>
-        <button class="icon-button compact" type="button" data-action="close-sync-dialog" title="关闭">×</button>
+        <h2>同步</h2>
+        <button class="icon-button compact" type="button" data-action="close-sync-dialog" title="关闭" aria-label="关闭">×</button>
       </div>
 
-      <label class="sync-toggle">
-        <input id="syncEnabled" type="checkbox">
-        <span>启用轻量同步</span>
-      </label>
+      <div class="sync-panel" id="syncMain">
+        <label class="switch-row">
+          <span>
+            <strong>自动同步</strong>
+            <small>收藏、排序、图标和壁纸在所有电脑上保持一致</small>
+          </span>
+          <input class="switch" id="syncEnabled" type="checkbox" role="switch">
+        </label>
 
-      <label class="field">
-        <span>服务器地址</span>
-        <input id="syncEndpoint" type="url" placeholder="https://sync.example.com">
-      </label>
+        <label class="field">
+          <span>服务器地址</span>
+          <input id="syncEndpoint" type="text" inputmode="url" placeholder="https://sync.example.com" spellcheck="false" autocomplete="url">
+        </label>
 
-      <label class="field">
-        <span>访问令牌</span>
-        <span class="sync-token-input">
-          <input id="syncToken" type="password" autocomplete="off" placeholder="服务器上的 SYNC_TOKEN">
-          <button class="text-button sync-token-action" type="button" data-action="toggle-sync-token" aria-controls="syncToken" aria-pressed="false">显示</button>
-          <button class="text-button sync-token-action" type="button" data-action="copy-sync-token">复制</button>
-        </span>
-      </label>
+        <label class="field">
+          <span>同步密码</span>
+          <span class="password-input">
+            <input id="syncPassword" type="password" autocomplete="current-password" placeholder="服务器上设置的 SYNC_PASSWORD">
+            <button class="text-button reveal-button" type="button" data-action="toggle-sync-password" aria-controls="syncPassword" aria-pressed="false">显示</button>
+          </span>
+          <small class="field-hint">换电脑时只要填服务器地址和这个密码。旧的访问令牌也能直接填在这里。</small>
+        </label>
 
-      <p class="sync-status" id="syncStatus">未启用</p>
-
-      <section class="wallpaper-sync" aria-labelledby="wallpaperSyncTitle">
-        <div>
-          <strong id="wallpaperSyncTitle">壁纸同步</strong>
-          <p id="wallpaperSyncStatus">壁纸仅在点击按钮时传输，不参与日常轻量同步；单张最大 100 MB。</p>
+        <div class="sync-status" id="syncStatusCard" data-tone="idle" role="status" aria-live="polite">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span class="status-text">
+            <strong id="syncStatus">未开启</strong>
+            <span id="syncDetail"></span>
+          </span>
         </div>
-        <div class="wallpaper-sync-actions">
-          <button class="text-button" id="uploadWallpaperButton" type="button" data-action="upload-sync-wallpaper">上传本机壁纸</button>
-          <button class="text-button" id="downloadWallpaperButton" type="button" data-action="download-sync-wallpaper">下载云端壁纸</button>
-        </div>
-      </section>
 
-      <div class="dialog-actions">
-        <button class="text-button" type="button" data-action="sync-now">立即同步</button>
-        <span class="dialog-spacer"></span>
-        <button class="text-button" type="button" data-action="close-sync-dialog">取消</button>
-        <button class="primary-button" type="submit">保存</button>
+        <button class="link-button" id="restoreBackupButton" type="button" data-action="restore-backup" hidden></button>
+
+        <div class="dialog-actions">
+          <button class="text-button" type="button" data-action="sync-now">立即同步</button>
+          <span class="dialog-spacer"></span>
+          <button class="text-button" type="button" data-action="close-sync-dialog">取消</button>
+          <button class="primary-button" type="submit">保存</button>
+        </div>
+      </div>
+
+      <div class="sync-panel" id="syncChoice" hidden>
+        <p class="dialog-lead" id="syncChoiceSummary"></p>
+        <div class="choice-list" role="radiogroup" aria-label="第一次同步">
+          <label class="choice-card">
+            <input type="radio" name="syncChoice" value="cloud">
+            <span><strong>使用云端数据</strong><small id="choiceCloudDetail"></small></span>
+          </label>
+          <label class="choice-card">
+            <input type="radio" name="syncChoice" value="merge">
+            <span><strong>合并两边</strong><small id="choiceMergeDetail"></small></span>
+          </label>
+          <label class="choice-card">
+            <input type="radio" name="syncChoice" value="local">
+            <span><strong>使用本机数据</strong><small id="choiceLocalDetail"></small></span>
+          </label>
+        </div>
+        <div class="dialog-actions">
+          <button class="text-button" type="button" data-action="sync-choice-later">稍后</button>
+          <span class="dialog-spacer"></span>
+          <button class="primary-button" type="button" data-action="sync-choice-confirm">开始同步</button>
+        </div>
       </div>
     </form>
   </dialog>
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-  <script src="app.js?v=0.1.46"></script>
+  <script src="sync-core.js?v=0.2.0"></script>
+  <script src="icons.js?v=0.2.0"></script>
+  <script src="app.js?v=0.2.0"></script>
 </body>
 </html>

@@ -30,29 +30,15 @@ function wallpaperSvgBuffer() {
   return Buffer.from(svg);
 }
 
+// Wallpapers are stored by their hash, like uploaded icons.
 async function readWallpaperInfo(page) {
   return await page.evaluate(async () => {
-    const db = await new Promise((resolve, reject) => {
-      const request = indexedDB.open('tomorin-new-tab');
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
-    });
+    const hash = JSON.parse(localStorage.getItem('tomorinNewTabState') || '{}').settings?.wallpaper?.hash;
+    if (!hash) return null;
+    const record = await getBlobRecord(hash);
+    if (!record?.blob) return null;
 
-    if (!db.objectStoreNames.contains('wallpapers')) {
-      db.close();
-      return null;
-    }
-
-    const blob = await new Promise((resolve, reject) => {
-      const tx = db.transaction('wallpapers', 'readonly');
-      const request = tx.objectStore('wallpapers').get('current');
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
-    });
-    db.close();
-    if (!blob) return null;
-
-    const url = URL.createObjectURL(blob);
+    const url = URL.createObjectURL(record.blob);
     const image = new Image();
     const dimensions = await new Promise((resolve, reject) => {
       image.onload = () => resolve({ width: image.naturalWidth, height: image.naturalHeight });
@@ -60,7 +46,7 @@ async function readWallpaperInfo(page) {
       image.src = url;
     });
     URL.revokeObjectURL(url);
-    return { type: blob.type, ...dimensions };
+    return { type: record.blob.type, ...dimensions };
   });
 }
 
@@ -113,6 +99,23 @@ async function waitForWallpaperInfo(page) {
   const info = await waitForWallpaperInfo(page);
 
   assert(Math.max(info.width, info.height) >= 3840, `wallpaper should keep a near-4K long edge, got ${info.width}x${info.height}`);
+
+  // A wallpaper left under the old fixed key (saved before pictures were
+  // stored by hash) is still shown, and moved to the hash store.
+  const moved = await page.evaluate(async () => {
+    const hash = state.settings.wallpaper.hash;
+    const record = await getBlobRecord(hash);
+    await storeRequest('wallpapers', 'readwrite', store => store.put(record.blob, 'current'));
+    await storeRequest('blobs', 'readwrite', store => store.delete(hash));
+    return hash;
+  });
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForFunction(() => document.body.classList.contains('has-wallpaper'), null, { timeout: 8000 });
+  const after = await page.evaluate(async hash => ({
+    inHashStore: Boolean(await getBlobRecord(hash)),
+    oldKey: Boolean(await storeRequest('wallpapers', 'readonly', store => store.get('current'))),
+  }), moved);
+  assert(after.inHashStore && !after.oldKey, `the old wallpaper should move to the hash store, got ${JSON.stringify(after)}`);
 
   console.log(JSON.stringify({ overlayBlur, wallpaper: info }, null, 2));
 

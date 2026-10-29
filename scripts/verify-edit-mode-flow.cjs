@@ -35,6 +35,7 @@ function assert(condition, message) {
   });
 
   await page.goto(pageUrl, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('.shortcut-card');
 
   const normalShortcutGeometry = await page.$$eval('.shortcut-card', cards => cards.map(card => {
     const icon = card.querySelector('.shortcut-icon');
@@ -73,37 +74,60 @@ function assert(condition, message) {
   assert(rightClickState.slotCount === 32, `global edit mode should render 32 slots, got ${rightClickState.slotCount}`);
   assert(rightClickState.addSlotIndex === '6', `add button should appear after the last shortcut at slot 6, got ${rightClickState.addSlotIndex}`);
 
-  const editMarkerState = await page.evaluate(() => {
-    const markers = Array.from(document.querySelectorAll('.shortcut-edit-marker'));
+  await page.waitForTimeout(200);
+  const badgeState = await page.evaluate(() => {
+    const badges = Array.from(document.querySelectorAll('.shortcut-remove'));
     return {
-      count: markers.length,
-      visibleCount: markers.filter(marker => getComputedStyle(marker).opacity === '1').length,
-      pointerSafe: markers.every(marker => getComputedStyle(marker).pointerEvents === 'none'),
-      transparent: markers.every(marker => {
-        const style = getComputedStyle(marker);
-        return style.backgroundColor === 'rgba(0, 0, 0, 0)' && style.boxShadow === 'none';
+      count: badges.length,
+      visibleCount: badges.filter(badge => getComputedStyle(badge).opacity === '1').length,
+      clickable: badges.every(badge => getComputedStyle(badge).pointerEvents === 'auto'),
+      // The badge sits on the corner and leaves the picture itself uncovered.
+      onCorner: badges.every(badge => {
+        const box = badge.getBoundingClientRect();
+        const icon = badge.closest('.shortcut-icon').getBoundingClientRect();
+        return box.left + box.width / 2 <= icon.left + 4 && box.top + box.height / 2 <= icon.top + 4;
       }),
-      text: markers[0]?.textContent.trim(),
+      centerClear: badges.every(badge => {
+        const icon = badge.closest('.shortcut-icon').getBoundingClientRect();
+        const hit = document.elementFromPoint(icon.left + icon.width / 2, icon.top + icon.height / 2);
+        return hit?.tagName === 'IMG';
+      }),
+      oldMarkers: document.querySelectorAll('.shortcut-edit-marker').length,
+      editBar: Boolean(document.querySelector('#editBar, .edit-bar')),
     };
   });
-  assert(editMarkerState.count === 6, `edit mode should render one marker per shortcut, got ${editMarkerState.count}`);
-  assert(editMarkerState.visibleCount === 6, `edit markers should be visible in edit mode, got ${editMarkerState.visibleCount}`);
-  assert(editMarkerState.pointerSafe, 'edit markers should not intercept shortcut pointer events');
-  assert(editMarkerState.transparent, 'edit markers should be transparent without a button-like background');
-  assert(editMarkerState.text === '✎', `edit marker should use a small edit icon, got ${editMarkerState.text}`);
+  assert(badgeState.count === 6, `edit mode should show one remove badge per shortcut, got ${badgeState.count}`);
+  assert(badgeState.visibleCount === 6, `remove badges should be visible in edit mode, got ${badgeState.visibleCount}`);
+  assert(badgeState.clickable, 'remove badges should be clickable in edit mode');
+  assert(badgeState.onCorner, 'remove badges should sit on the top-left corner of the icon');
+  assert(badgeState.centerClear, 'nothing should be drawn over the middle of an icon in edit mode');
+  assert(badgeState.oldMarkers === 0, 'the old pencil overlay should be gone');
+  assert(!badgeState.editBar, 'edit mode should not show a hint bar; clicking outside the icons finishes editing');
 
-  const addAlignment = await page.evaluate(() => {
+  const addTile = await page.evaluate(() => {
     const lastIcon = document.querySelector('[data-id="site-5"] .shortcut-icon').getBoundingClientRect();
-    const addTile = document.querySelector('[data-action="add-shortcut"]').getBoundingClientRect();
+    const plus = document.querySelector('.add-shortcut-icon');
+    const box = plus.getBoundingClientRect();
+    const style = getComputedStyle(plus);
     return {
       iconCenterY: lastIcon.top + lastIcon.height / 2,
-      addCenterY: addTile.top + addTile.height / 2,
+      addCenterY: box.top + box.height / 2,
+      // Layout size: the wiggle rotation makes bounding boxes slightly larger.
+      sameSize: plus.offsetWidth === document.querySelector('[data-id="site-5"] .shortcut-icon').offsetWidth
+        && plus.offsetHeight === document.querySelector('[data-id="site-5"] .shortcut-icon').offsetHeight,
+      borderStyle: style.borderTopStyle,
+      frosted: (style.backdropFilter || '').includes('blur'),
+      label: document.querySelector('.add-shortcut-tile .shortcut-title')?.textContent,
     };
   });
   assert(
-    Math.abs(addAlignment.iconCenterY - addAlignment.addCenterY) <= 0.5,
-    `add shortcut tile should align with shortcut icons, got ${JSON.stringify(addAlignment)}`,
+    Math.abs(addTile.iconCenterY - addTile.addCenterY) <= 0.5,
+    `add shortcut tile should align with shortcut icons, got ${JSON.stringify(addTile)}`,
   );
+  assert(addTile.sameSize, 'the add tile should be the same size as the icons');
+  assert(addTile.borderStyle !== 'dashed', 'the add tile should not use a dashed box');
+  assert(addTile.frosted, 'the add tile should be a frosted square');
+  assert(addTile.label === '添加', `the add tile should be labelled like a shortcut, got ${addTile.label}`);
 
   await page.addStyleTag({ content: '.edit-mode .shortcut-card .shortcut-icon { animation: none !important; transform: none !important; }' });
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
@@ -159,13 +183,25 @@ function assert(condition, message) {
   const stillEditingAfterDialogEsc = await page.$eval('.newtab-shell', shell => shell.classList.contains('edit-mode'));
   assert(stillEditingAfterDialogEsc, 'Escape should close an open dialog before exiting edit mode');
 
+  // The remove badge deletes right away and offers an undo.
+  await page.click('[data-id="site-2"] [data-action="remove-shortcut"]');
+  await page.waitForFunction(() => !document.querySelector('[data-id="site-2"]'));
+  await page.waitForSelector('.toast.visible .toast-action');
+  const undoLabel = await page.$eval('.toast-action', node => node.textContent);
+  assert(undoLabel === '撤销', `deleting should offer 撤销, got ${undoLabel}`);
+  await page.click('.toast-action');
+  await page.waitForSelector('[data-id="site-2"]');
+  const restoredOrder = await page.$$eval('.shortcut-card', cards => cards.map(card => card.dataset.id));
+  assert(restoredOrder[2] === 'site-2', `undo should put the site back in its place, got ${restoredOrder.join(',')}`);
+  assert(await page.$eval('.newtab-shell', shell => shell.classList.contains('edit-mode')), 'undo should keep edit mode open');
+
   await page.keyboard.press('Escape');
   await page.waitForFunction(() => !document.querySelector('.newtab-shell')?.classList.contains('edit-mode'));
-  const hiddenEditMarkers = await page.$$eval(
-    '.shortcut-edit-marker',
-    markers => markers.every(marker => getComputedStyle(marker).opacity === '0'),
+  const hiddenBadges = await page.$$eval(
+    '.shortcut-remove',
+    badges => badges.every(badge => getComputedStyle(badge).opacity === '0' && getComputedStyle(badge).pointerEvents === 'none'),
   );
-  assert(hiddenEditMarkers, 'edit markers should be hidden after exiting edit mode');
+  assert(hiddenBadges, 'remove badges should be hidden and inert after exiting edit mode');
 
   await page.click('[data-id="site-1"]', { button: 'right' });
   await page.waitForFunction(() => document.querySelector('.newtab-shell')?.classList.contains('edit-mode'));
@@ -177,7 +213,7 @@ function assert(condition, message) {
   await page.mouse.click(40, 40);
   await page.waitForFunction(() => !document.querySelector('.newtab-shell')?.classList.contains('edit-mode'));
 
-  console.log(JSON.stringify({ removedControls, rightClickState, addTitle }, null, 2));
+  console.log(JSON.stringify({ removedControls, rightClickState, badgeState, addTile, addTitle }, null, 2));
 
   await browser.close();
 })().catch(error => {

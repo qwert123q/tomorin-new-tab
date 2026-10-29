@@ -1,21 +1,35 @@
 'use strict';
 
+const core = globalThis.TomorinCore;
+const iconKit = globalThis.TomorinIcons;
+const { normalizeUrl, isHttpUrl, siteOrigin, hostnameFromUrl, urlKey } = core;
+
 const STORAGE_KEY = 'tomorinNewTabState';
+const BACKUP_KEY = 'tomorinNewTabBackup';
 const DB_NAME = 'tomorin-new-tab';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const WALLPAPER_STORE = 'wallpapers';
 const ICON_STORE = 'icons';
-const WALLPAPER_ID = 'current';
+const BLOB_STORE = 'blobs';
+const LEGACY_WALLPAPER_ID = 'current';
+const BLOB_PRUNE_AGE_MS = 10 * 60 * 1000;
 const PAGE_CAPACITY = 32;
 const PAGE_SCROLL_DURATION_MS = 45;
-const SYNC_SCHEMA_VERSION = 1;
-const SYNC_STARTUP_MIN_INTERVAL_MS = 5 * 60 * 1000;
-const SYNC_REQUEST_TIMEOUT_MS = 3500;
-const WALLPAPER_SYNC_TIMEOUT_MS = 60 * 1000;
-const MAX_SYNC_WALLPAPER_BYTES = 100 * 1024 * 1024;
-const SYNC_DEBOUNCE_MS = 900;
-const DEFAULT_SHORTCUT_UPDATED_AT = 1700000000000;
+const DEFAULT_SHORTCUT_STAMP = 1700000000000;
+const SYNC_REQUEST_TIMEOUT_MS = 10000;
+const SYNC_BLOB_TIMEOUT_MS = 180000;
+const SYNC_DEBOUNCE_MS = 700;
+const SYNC_MIN_CHECK_INTERVAL_MS = 15000;
+const SYNC_VISIBLE_CHECK_MS = 60000;
+const MAX_WALLPAPER_BYTES = 100 * 1024 * 1024;
+const ICON_RECHECK_SMALL_MS = 3 * 24 * 60 * 60 * 1000;
+const ICON_RECHECK_MISSING_MS = 12 * 60 * 60 * 1000;
+const ICON_RETRY_TRANSIENT_MS = 20 * 60 * 1000;
+const ICON_SHARP_SIDE = 120;
+const ICON_WORKERS = 3;
+const BACKUP_DELETE_THRESHOLD = 3;
 const SEARCH_ENGINES = new Set(['default', 'bing']);
+const TAB_ID = crypto.randomUUID();
 
 const DEFAULT_SHORTCUTS = [
   { title: 'YouTube', url: 'https://www.youtube.com', size: 'small' },
@@ -25,34 +39,7 @@ const DEFAULT_SHORTCUTS = [
   { title: 'Agoda', url: 'https://www.agoda.com', size: 'small' },
 ];
 
-const DEFAULT_STATE = {
-  shortcuts: DEFAULT_SHORTCUTS.map((item, index) => ({
-    id: crypto.randomUUID(),
-    title: item.title,
-    url: item.url,
-    size: item.size,
-    order: index,
-    updatedAt: DEFAULT_SHORTCUT_UPDATED_AT,
-  })),
-  deletedShortcuts: [],
-  settings: {
-    currentPage: 0,
-    wallpaper: { type: 'none' },
-    iconDensity: 'small',
-    searchEngine: 'default',
-  },
-  sync: {
-    enabled: false,
-    endpoint: '',
-    token: '',
-    lastSyncAt: 0,
-    pending: false,
-    lastError: '',
-  },
-};
-
 const hasChromeStorage = Boolean(globalThis.chrome?.storage?.local);
-const hasChromeRuntime = Boolean(globalThis.chrome?.runtime?.getURL);
 const hasChromeSearch = Boolean(globalThis.chrome?.search?.query);
 
 const els = {
@@ -64,33 +51,34 @@ const els = {
   shortcutPages: document.getElementById('shortcutPages'),
   emptyState: document.getElementById('emptyState'),
   pageDots: document.getElementById('pageDots'),
-  toolbar: document.querySelector('.toolbar'),
+  settingsMenu: document.querySelector('.settings-menu'),
   densityButtons: [...document.querySelectorAll('[data-action="set-density"]')],
   searchEngineButtons: [...document.querySelectorAll('[data-action="set-search-engine"]')],
   wallpaperInput: document.getElementById('wallpaperInput'),
   syncDialog: document.getElementById('syncDialog'),
   syncForm: document.getElementById('syncForm'),
+  syncMain: document.getElementById('syncMain'),
+  syncChoice: document.getElementById('syncChoice'),
   syncEnabled: document.getElementById('syncEnabled'),
   syncEndpoint: document.getElementById('syncEndpoint'),
-  syncToken: document.getElementById('syncToken'),
+  syncPassword: document.getElementById('syncPassword'),
+  syncStatusCard: document.getElementById('syncStatusCard'),
   syncStatus: document.getElementById('syncStatus'),
-  wallpaperSyncStatus: document.getElementById('wallpaperSyncStatus'),
-  uploadWallpaperButton: document.getElementById('uploadWallpaperButton'),
-  downloadWallpaperButton: document.getElementById('downloadWallpaperButton'),
+  syncDetail: document.getElementById('syncDetail'),
+  syncChoiceSummary: document.getElementById('syncChoiceSummary'),
+  restoreBackupButton: document.getElementById('restoreBackupButton'),
   dialog: document.getElementById('shortcutDialog'),
   shortcutForm: document.getElementById('shortcutForm'),
   dialogTitle: document.getElementById('dialogTitle'),
   titleInput: document.getElementById('shortcutTitle'),
   urlInput: document.getElementById('shortcutUrl'),
   iconInput: document.getElementById('shortcutIconInput'),
-  iconPreview: document.getElementById('shortcutIconPreview'),
-  iconCandidates: document.getElementById('shortcutIconCandidates'),
-  clearIconButton: document.getElementById('clearShortcutIconButton'),
+  iconOptions: document.getElementById('shortcutIconOptions'),
   deleteButton: document.getElementById('deleteShortcutButton'),
   toast: document.getElementById('toast'),
 };
 
-let state = structuredClone(DEFAULT_STATE);
+let state = defaultState();
 let editMode = false;
 let editingId = null;
 let draggedId = null;
@@ -102,27 +90,45 @@ let movedShortcutId = null;
 let pageScrollTimer = null;
 let pageScrollAnimation = 0;
 let suppressScrollState = false;
-let pendingCustomIcon = '';
-let pendingIconUrl = '';
-let pendingIconCleared = false;
-let pendingOriginalUrl = '';
+let writeCounter = 0;
+let stateReady = false;
+const earlyStates = [];
+
+let dialogIcon = { choice: 'auto' };
+let dialogChoices = [];
+let dialogChoicesKey = '';
+let dialogChoicesLoading = false;
+let dialogUrlTimer = null;
+const dialogObjectUrls = new Set();
+
+const iconDisplay = new Map();
+const iconQueue = [];
+const iconQueued = new Set();
+let iconWorkers = 0;
+
 let syncTimer = null;
-let syncInFlight = false;
-let wallpaperSyncInFlight = false;
-const activeIconUrls = new Map();
-const iconCacheInFlight = new Set();
-const pageIconCandidateCache = new Map();
-const pageIconCandidateRequests = new Map();
+let syncRunning = false;
+let currentSync = null;
+let syncProgress = '';
+let pendingChoice = null;
 
 init();
 
+// ------------------------------------------------------------------ setup
+
 async function init() {
-  state = await loadState();
-  await hydrateShortcutIcons();
-  await applyWallpaper();
+  // Listen before reading, so a save from another tab during startup is not missed.
+  bindStorageListener();
+  const loaded = await loadState();
+  state = loaded.state;
+  if (loaded.legacy) await finishLegacyMigration(loaded.legacy);
+  await repairSvgIcons();
+  await Promise.all([hydrateShortcutIcons(), applyWallpaper()]);
   bindEvents();
   render();
-  if (!globalThis.__TOMORIN_DISABLE_AUTO_ICON_CACHE) cacheMissingShortcutIcons();
+  stateReady = true;
+  for (const value of earlyStates.splice(0)) await handleExternalState(value);
+  queueStaleIcons();
   scheduleSync('startup');
 }
 
@@ -133,21 +139,9 @@ function bindEvents() {
   els.syncForm.addEventListener('submit', handleSyncSubmit);
   els.wallpaperInput.addEventListener('change', handleWallpaperUpload);
   els.iconInput.addEventListener('change', handleShortcutIconUpload);
-  els.iconCandidates.addEventListener('error', handleIconCandidateError, true);
-  els.urlInput.addEventListener('input', () => {
-    if (!pendingCustomIcon) {
-      pendingIconUrl = '';
-      pendingIconCleared = true;
-      renderIconPreview();
-    }
-  });
-  els.titleInput.addEventListener('input', () => {
-    if (!pendingCustomIcon) {
-      renderIconPreview();
-    }
-  });
-  els.shortcutPages.addEventListener('load', handleShortcutIconLoad, true);
-  els.shortcutPages.addEventListener('error', handleShortcutIconError, true);
+  els.urlInput.addEventListener('input', handleDialogUrlInput);
+  els.titleInput.addEventListener('input', () => renderIconOptions());
+  els.dialog.addEventListener('close', releaseDialogObjectUrls);
   document.addEventListener('keydown', handleKeydown);
   els.shortcutPages.addEventListener('dragstart', handleDragStart);
   els.shortcutPages.addEventListener('dragover', handleDragOver);
@@ -158,113 +152,413 @@ function bindEvents() {
   els.shell.addEventListener('wheel', handleShortcutWheel, { passive: true });
   els.shell.addEventListener('touchstart', handleTouchStart, { passive: true });
   els.shell.addEventListener('touchend', handleTouchEnd, { passive: true });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    if (Date.now() - (state.sync.lastCheckAt || 0) > SYNC_VISIBLE_CHECK_MS) scheduleSync('visible');
+  });
+  window.addEventListener('online', () => scheduleSync('online'));
+}
+
+// ------------------------------------------------------------------ state
+
+function defaultState() {
+  const keys = core.generateNKeysBetween(null, null, DEFAULT_SHORTCUTS.length);
+  return {
+    version: 2,
+    shortcuts: DEFAULT_SHORTCUTS.map((item, index) => ({
+      id: crypto.randomUUID(),
+      title: item.title,
+      url: item.url,
+      size: item.size,
+      icon: null,
+      pos: keys[index],
+      editedAt: DEFAULT_SHORTCUT_STAMP,
+      movedAt: DEFAULT_SHORTCUT_STAMP,
+      createdAt: DEFAULT_SHORTCUT_STAMP,
+      order: index,
+    })),
+    tombstones: [],
+    settings: {
+      currentPage: 0,
+      searchEngine: 'default',
+      iconDensity: 'small',
+      iconDensityAt: 0,
+      wallpaper: wallpaperSetting(null),
+    },
+    sync: normalizeSyncConfig({}),
+    clock: 0,
+    pristine: true,
+    generation: 0,
+    replaced: null,
+  };
+}
+
+function normalizeSyncConfig(raw = {}) {
+  const source = raw && typeof raw === 'object' ? raw : {};
+  const legacyToken = typeof source.token === 'string' ? source.token : '';
+  return {
+    enabled: Boolean(source.enabled),
+    endpoint: normalizeSyncEndpoint(source.endpoint || ''),
+    password: typeof source.password === 'string' ? source.password : legacyToken,
+    rev: Number.isInteger(source.rev) && source.rev >= 0 ? source.rev : 0,
+    linked: typeof source.linked === 'string' ? source.linked : '',
+    dirty: source.dirty !== false,
+    lastSyncAt: Number.isFinite(source.lastSyncAt) ? source.lastSyncAt : 0,
+    lastCheckAt: Number.isFinite(source.lastCheckAt) ? source.lastCheckAt : 0,
+    lastError: typeof source.lastError === 'string' ? source.lastError.slice(0, 160) : '',
+  };
+}
+
+function wallpaperSetting(raw) {
+  const wallpaper = core.normalizeWallpaper(raw);
+  return { type: wallpaper.hash ? 'uploaded' : 'none', ...wallpaper };
+}
+
+function withOrder(list) {
+  return list.map((item, index) => ({ ...item, order: index }));
+}
+
+function docFromState(source = state) {
+  return core.normalizeDoc({
+    shortcuts: source.shortcuts,
+    tombstones: source.tombstones,
+    settings: { iconDensity: source.settings.iconDensity, iconDensityAt: source.settings.iconDensityAt },
+    wallpaper: source.settings.wallpaper,
+  });
+}
+
+function stateWithDoc(base, doc) {
+  const normalized = core.normalizeDoc(doc);
+  return {
+    ...base,
+    shortcuts: withOrder(normalized.shortcuts),
+    tombstones: normalized.tombstones,
+    settings: {
+      ...base.settings,
+      iconDensity: normalized.settings.iconDensity,
+      iconDensityAt: normalized.settings.iconDensityAt,
+      wallpaper: wallpaperSetting(normalized.wallpaper),
+    },
+    clock: Math.max(base.clock || 0, core.maxTimestamp(normalized)),
+  };
+}
+
+function normalizeLocalState(saved) {
+  const base = {
+    version: 2,
+    shortcuts: [],
+    tombstones: [],
+    settings: {
+      currentPage: Number.isFinite(saved.settings?.currentPage) ? saved.settings.currentPage : 0,
+      searchEngine: normalizeSearchEngine(saved.settings?.searchEngine),
+      iconDensity: 'small',
+      iconDensityAt: 0,
+      wallpaper: wallpaperSetting(null),
+    },
+    sync: normalizeSyncConfig(saved.sync),
+    clock: Number.isFinite(saved.clock) ? saved.clock : 0,
+    pristine: Boolean(saved.pristine),
+    // Bumped when the shortcuts are replaced wholesale (first sync "use cloud"),
+    // so other open tabs follow instead of merging the old list back in.
+    generation: Number.isInteger(saved.generation) && saved.generation >= 0 ? saved.generation : 0,
+    replaced: saved.replaced?.snapshot ? { generation: saved.replaced.generation, snapshot: core.normalizeDoc(saved.replaced.snapshot) } : null,
+  };
+  return stateWithDoc(base, {
+    shortcuts: saved.shortcuts,
+    tombstones: saved.tombstones,
+    settings: { iconDensity: saved.settings?.iconDensity, iconDensityAt: saved.settings?.iconDensityAt },
+    wallpaper: saved.settings?.wallpaper,
+  });
+}
+
+// Version 1 stored a plain `order` number and bumped `updatedAt` whenever an
+// icon was cached, which is why computers kept overwriting each other.
+function migrateLegacyState(saved) {
+  const list = saved.shortcuts
+    .map((item, index) => ({ item, index }))
+    .filter(({ item }) => item && item.title && item.url)
+    .sort((a, b) => (Number.isFinite(a.item.order) ? a.item.order : a.index) - (Number.isFinite(b.item.order) ? b.item.order : b.index))
+    .map(({ item }) => item);
+  const keys = core.generateNKeysBetween(null, null, list.length);
+  const shortcuts = list.map((item, index) => {
+    const at = Number.isFinite(item.updatedAt) && item.updatedAt > 0 ? item.updatedAt : DEFAULT_SHORTCUT_STAMP;
+    return {
+      id: typeof item.id === 'string' && item.id ? item.id : crypto.randomUUID(),
+      title: item.title,
+      url: item.url,
+      size: item.size,
+      icon: legacyIconChoice(item),
+      pos: keys[index],
+      editedAt: at,
+      movedAt: at,
+      createdAt: at,
+    };
+  });
+  const oldSync = saved.sync || {};
+  const base = normalizeLocalState({
+    version: 2,
+    settings: { currentPage: saved.settings?.currentPage, searchEngine: saved.settings?.searchEngine },
+    // The old token keeps working as the password; the first sync with the
+    // new server decides how this computer's copy joins the cloud copy.
+    sync: { enabled: oldSync.enabled, endpoint: oldSync.endpoint, password: oldSync.token, rev: 0, linked: '', dirty: true },
+  });
+  const migrated = stateWithDoc(base, {
+    shortcuts,
+    tombstones: Array.isArray(saved.deletedShortcuts)
+      ? saved.deletedShortcuts.map(item => ({ id: item?.id, deletedAt: item?.deletedAt }))
+      : [],
+    // A size chosen in version 1 beats an untouched default, not a later choice.
+    settings: { iconDensity: saved.settings?.iconDensity, iconDensityAt: saved.settings?.iconDensity && saved.settings.iconDensity !== 'small' ? 1 : 0 },
+    wallpaper: null,
+  });
+  migrated.pristine = looksLikeUntouchedDefaults(saved, list);
+  return migrated;
+}
+
+function legacyIconChoice(item) {
+  if (!isHttpUrl(item.iconUrl)) return null;
+  return isAutomaticLegacySource(item.iconUrl, item.url) ? null : { type: 'url', url: item.iconUrl };
+}
+
+function isAutomaticLegacySource(iconUrl, siteUrl) {
+  try {
+    const origin = siteOrigin(siteUrl);
+    const automatic = ['/favicon.ico', '/apple-touch-icon.png', '/favicon-32x32.png'].map(file => new URL(file, origin).toString());
+    if (automatic.includes(iconUrl)) return true;
+  } catch {
+    // Fall through to the service check.
+  }
+  return /^https:\/\/(www\.google\.com\/s2\/favicons|icons\.duckduckgo\.com\/ip3\/|t\d\.gstatic\.com\/faviconV2)/.test(iconUrl);
+}
+
+// Only a version 1 install nobody ever changed counts as untouched: the five
+// default sites in their order and size, no picked icons, nothing deleted.
+function looksLikeUntouchedDefaults(saved, list) {
+  if (list.length !== DEFAULT_SHORTCUTS.length) return false;
+  if (Array.isArray(saved.deletedShortcuts) && saved.deletedShortcuts.length) return false;
+  if (saved.settings?.wallpaper?.type === 'uploaded') return false;
+  return list.every((item, index) => {
+    const original = DEFAULT_SHORTCUTS[index];
+    return urlKey(item.url) === urlKey(original.url)
+      && item.title === original.title
+      && (item.size || 'small') === original.size
+      && !item.customIcon
+      && !legacyIconChoice(item);
+  });
 }
 
 async function loadState() {
+  let saved = null;
   try {
-    const saved = hasChromeStorage
+    saved = hasChromeStorage
       ? (await chrome.storage.local.get(STORAGE_KEY))[STORAGE_KEY]
       : JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
-    if (!saved || !Array.isArray(saved.shortcuts)) return structuredClone(DEFAULT_STATE);
-    return normalizeState(saved);
   } catch {
-    return structuredClone(DEFAULT_STATE);
+    saved = null;
+  }
+  if (!saved || typeof saved !== 'object' || !Array.isArray(saved.shortcuts)) return { state: defaultState(), legacy: null };
+  if (saved.version === 2) return { state: normalizeLocalState(saved), legacy: null };
+  try {
+    return { state: migrateLegacyState(saved), legacy: saved };
+  } catch {
+    return { state: defaultState(), legacy: null };
   }
 }
 
-function normalizeState(saved) {
-  const deletedShortcuts = normalizeDeletedShortcuts(saved.deletedShortcuts);
-  const shortcuts = saved.shortcuts
-    .filter(item => item && item.title && item.url)
-    .map((item, index) => ({
-      id: typeof item.id === 'string' ? item.id : crypto.randomUUID(),
-      title: String(item.title).slice(0, 80),
-      url: normalizeUrl(String(item.url)),
-      size: ['small', 'medium', 'large'].includes(item.size) ? item.size : 'small',
-      iconId: typeof item.iconId === 'string' && item.iconId ? item.iconId : '',
-      customIcon: isImageDataUrl(item.customIcon) ? item.customIcon : '',
-      iconUrl: isHttpUrl(item.iconUrl) ? item.iconUrl : '',
-      order: Number.isFinite(item.order) ? item.order : index,
-      updatedAt: Number.isFinite(item.updatedAt) ? item.updatedAt : DEFAULT_SHORTCUT_UPDATED_AT,
-    }))
-    .filter(item => !isShortcutDeleted(item, deletedShortcuts))
-    .sort((a, b) => a.order - b.order)
-    .map((item, index) => ({ ...item, order: index }));
+async function finishLegacyMigration(legacy) {
+  let movedWallpaper = false;
+  if (legacy.settings?.wallpaper?.type === 'uploaded') {
+    const blob = await getLegacyWallpaper().catch(() => null);
+    if (blob) {
+      const hash = await iconKit.sha256Hex(await blob.arrayBuffer());
+      const mime = blob.type || 'image/jpeg';
+      await saveBlobRecord(hash, blob, mime);
+      movedWallpaper = true;
+      // A tiny timestamp: a wallpaper already in the cloud wins, an empty cloud gets this one.
+      state.settings.wallpaper = wallpaperSetting({ hash, mime, size: blob.size, updatedAt: 1 });
+    }
+  }
 
-  const settings = {
-    currentPage: Number.isFinite(saved.settings?.currentPage) ? saved.settings.currentPage : 0,
-    wallpaper: saved.settings?.wallpaper?.type === 'uploaded'
-      ? { type: 'uploaded' }
-      : { type: 'none' },
-    iconDensity: ['small', 'medium', 'large'].includes(saved.settings?.iconDensity)
-      ? saved.settings.iconDensity
-      : 'small',
-    searchEngine: normalizeSearchEngine(saved.settings?.searchEngine),
-  };
+  // Oldest first, so when two entries for one address were folded together the
+  // most recently changed one's icon wins, like its title.
+  const entries = (legacy.shortcuts || [])
+    .filter(old => old?.url)
+    .sort((a, b) => (Number(a.updatedAt) || 0) - (Number(b.updatedAt) || 0));
+  for (const old of entries) {
+    const item = state.shortcuts.find(shortcut => shortcut.id === old.id)
+      || state.shortcuts.find(shortcut => urlKey(shortcut.url) === urlKey(old.url));
+    if (!item) continue;
+    let blob = null;
+    if (isImageDataUrl(old.customIcon)) {
+      blob = dataUrlToBlob(old.customIcon);
+    } else if (old.iconId) {
+      const record = await getIconRecord(old.iconId).catch(() => null);
+      if (record?.sourceUrl === 'custom' && record.blob) blob = record.blob;
+    }
+    if (!blob) {
+      item.icon = legacyIconChoice(old);
+      continue;
+    }
+    state.pristine = false;
+    if (blob.type === 'image/svg+xml') {
+      // Version 1 saved its letter placeholder as an SVG "upload".
+      item.icon = { type: 'letter' };
+      continue;
+    }
+    const mime = blob.type || 'image/png';
+    const hash = await iconKit.sha256Hex(await blob.arrayBuffer());
+    await saveBlobRecord(hash, blob, mime);
+    item.icon = { type: 'blob', hash, mime };
+  }
 
-  const sync = {
-    enabled: Boolean(saved.sync?.enabled),
-    endpoint: normalizeSyncEndpoint(saved.sync?.endpoint || ''),
-    token: typeof saved.sync?.token === 'string' ? saved.sync.token : '',
-    lastSyncAt: Number.isFinite(saved.sync?.lastSyncAt) ? saved.sync.lastSyncAt : 0,
-    pending: Boolean(saved.sync?.pending),
-    lastError: typeof saved.sync?.lastError === 'string' ? saved.sync.lastError.slice(0, 160) : '',
-  };
-
-  return { shortcuts, deletedShortcuts, settings, sync };
+  await persistState();
+  if (movedWallpaper) await deleteLegacyWallpaper().catch(() => {});
 }
 
-function normalizeDeletedShortcuts(deletedShortcuts) {
-  if (!Array.isArray(deletedShortcuts)) return [];
-  return deletedShortcuts
-    .filter(item => item && typeof item.id === 'string' && item.id)
-    .map(item => ({
-      id: item.id,
-      url: typeof item.url === 'string' ? normalizeUrl(item.url) : '',
-      deletedAt: Number.isFinite(item.deletedAt) ? item.deletedAt : Date.now(),
-    }))
-    .sort((a, b) => b.deletedAt - a.deletedAt)
-    .slice(0, 300);
+// Version 1 saved its letter placeholder as an SVG "upload", and early builds
+// of this version migrated it as a picture. The sync server only keeps bitmap
+// pictures, so such icons become letter tiles, which is what they showed.
+async function repairSvgIcons() {
+  let changed = false;
+  for (const item of state.shortcuts) {
+    if (item.icon?.type !== 'blob') continue;
+    const record = item.icon.mime === 'image/svg+xml' ? null : await getBlobRecord(item.icon.hash).catch(() => null);
+    if (item.icon.mime === 'image/svg+xml' || record?.blob?.type === 'image/svg+xml') {
+      item.icon = { type: 'letter' };
+      changed = true;
+    }
+  }
+  if (!changed) return;
+  state.sync.dirty = true;
+  await persistState();
 }
 
-function isShortcutDeleted(item, deletedShortcuts = state.deletedShortcuts || []) {
-  const tombstone = deletedShortcuts.find(deleted => (
-    deleted.id === item.id || (deleted.url && shortcutUrlKey(deleted.url) === shortcutUrlKey(item.url))
-  ));
-  return Boolean(tombstone && tombstone.deletedAt >= (item.updatedAt || 0));
-}
-
-async function saveState(options = {}) {
-  state.shortcuts = orderedShortcuts().map((item, index) => ({ ...item, order: index }));
-  state.deletedShortcuts = normalizeDeletedShortcuts(state.deletedShortcuts);
+async function persistState() {
+  state.shortcuts = withOrder(core.sortShortcuts(state.shortcuts));
   state.settings.currentPage = clampPage(state.settings.currentPage);
-  await persistState(state);
-  if (options.sync !== false) scheduleSync('save');
+  writeCounter += 1;
+  const snapshot = { ...state, writer: `${TAB_ID}:${writeCounter}` };
+  if (hasChromeStorage) {
+    await chrome.storage.local.set({ [STORAGE_KEY]: snapshot });
+  } else {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
+  }
 }
 
-async function persistState(nextState) {
-  if (hasChromeStorage) {
-    await chrome.storage.local.set({ [STORAGE_KEY]: nextState });
-  } else {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(nextState));
+// Saves a change to synced data and schedules a sync. A computer whose
+// shortcuts were never touched simply takes the cloud copy on first sync.
+async function commitChange({ touchesShortcuts = true } = {}) {
+  if (touchesShortcuts) state.pristine = false;
+  state.sync.dirty = true;
+  await persistState();
+  scheduleSync('change');
+}
+
+function nextStamp() {
+  const value = Math.max(Date.now(), (state.clock || 0) + 1);
+  state.clock = value;
+  return value;
+}
+
+function bindStorageListener() {
+  const receive = value => {
+    if (!stateReady) earlyStates.push(value);
+    else handleExternalState(value);
+  };
+  if (hasChromeStorage && chrome.storage.onChanged) {
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area === 'local' && changes[STORAGE_KEY]) receive(changes[STORAGE_KEY].newValue);
+    });
+    return;
   }
+  window.addEventListener('storage', event => {
+    if (event.key !== STORAGE_KEY || !event.newValue) return;
+    try {
+      receive(JSON.parse(event.newValue));
+    } catch {
+      // Ignore unreadable writes.
+    }
+  });
+}
+
+// Another new tab saved a change. Both copies are merged (the data merges
+// without loss), and when this tab holds something the saved copy lacks, it is
+// written back, so two tabs saving at the same moment never lose an edit.
+async function handleExternalState(value) {
+  if (!value || value.version !== 2) return;
+  if (typeof value.writer === 'string' && value.writer.startsWith(`${TAB_ID}:`)) return;
+  const previous = state;
+  const incoming = normalizeLocalState(value);
+  let next;
+  let writeBack = false;
+
+  if (incoming.generation > (previous.generation || 0)) {
+    // Another tab replaced the shortcuts with the cloud copy: follow it, but
+    // keep what this tab changed after the replaced copy was taken.
+    const extra = incoming.replaced?.snapshot ? core.changesSince(incoming.replaced.snapshot, docFromState(previous)) : null;
+    next = incoming;
+    if (extra && !core.sameDoc(extra, {})) {
+      const theirs = docFromState(incoming);
+      const merged = core.mergeDocs(theirs, extra);
+      writeBack = !core.sameDoc(merged, theirs);
+      next = stateWithDoc(incoming, merged);
+      if (writeBack) next.sync.dirty = true;
+    }
+  } else if (incoming.generation < (previous.generation || 0)) {
+    // Written by a tab that had not seen the replacement yet: keep its new
+    // edits, drop its old copy, and save the result.
+    const extra = previous.replaced?.snapshot ? core.changesSince(previous.replaced.snapshot, docFromState(incoming)) : null;
+    next = extra && !core.sameDoc(extra, {}) ? stateWithDoc(previous, core.mergeDocs(docFromState(previous), extra)) : previous;
+    if (next !== previous) next.sync.dirty = true;
+    writeBack = true;
+  } else {
+    const theirs = docFromState(incoming);
+    const merged = core.mergeDocs(docFromState(previous), theirs);
+    writeBack = !core.sameDoc(merged, theirs);
+    next = stateWithDoc(incoming, merged);
+    next.pristine = previous.pristine && incoming.pristine;
+    next.clock = Math.max(previous.clock || 0, next.clock || 0);
+    const mine = previous.sync;
+    if (mine.endpoint === incoming.sync.endpoint && mine.lastSyncAt > incoming.sync.lastSyncAt) {
+      next.sync = { ...next.sync, rev: mine.rev, linked: mine.linked, lastSyncAt: mine.lastSyncAt, lastError: mine.lastError };
+    }
+    next.sync.lastCheckAt = Math.max(mine.lastCheckAt || 0, incoming.sync.lastCheckAt || 0);
+    if (writeBack) next.sync.dirty = true;
+  }
+
+  next.settings.currentPage = previous.settings.currentPage;
+  state = next;
+  // Another tab answered the first-sync question.
+  if (pendingChoice && state.sync.linked === state.sync.endpoint) {
+    pendingChoice = null;
+    if (els.syncDialog.open) showSyncMain();
+  }
+  renderSyncAlert();
+  if (writeBack) {
+    await persistState();
+    // This tab added what the saved copy lacked, so it also syncs it.
+    scheduleSync('change');
+  }
+  await hydrateShortcutIcons();
+  render();
+  queueStaleIcons();
+  if (previous.settings.wallpaper.hash !== state.settings.wallpaper.hash) await applyWallpaper();
+  if (els.syncDialog.open) renderSyncStatus();
 }
 
 function orderedShortcuts() {
-  return [...state.shortcuts].sort((a, b) => a.order - b.order);
+  return core.sortShortcuts(state.shortcuts);
 }
+
+// ---------------------------------------------------------------- paging
 
 function pageCount() {
   return Math.max(1, Math.ceil(pageItemCount() / PAGE_CAPACITY));
 }
 
 function clampPage(page) {
-  return clampPageForCount(page, pageItemCount());
-}
-
-function clampPageForCount(page, shortcutCount) {
-  const count = Math.max(1, Math.ceil(shortcutCount / PAGE_CAPACITY));
-  return Math.max(0, Math.min(page, count - 1));
+  const count = Math.max(1, Math.ceil(pageItemCount() / PAGE_CAPACITY));
+  return Math.max(0, Math.min(Number.isFinite(page) ? page : 0, count - 1));
 }
 
 function pageItemCount() {
@@ -280,13 +574,11 @@ function pageItems(page) {
   return orderedShortcuts().slice(start, start + PAGE_CAPACITY);
 }
 
-function currentPageItems() {
-  return pageItems(state.settings.currentPage);
+function activeShortcutPage() {
+  return els.shortcutPages.querySelector(`.shortcut-page[data-page="${state.settings.currentPage}"]`);
 }
 
-function currentPageStartIndex() {
-  return pageStartIndex(state.settings.currentPage);
-}
+// -------------------------------------------------------------- rendering
 
 function render() {
   state.settings.currentPage = clampPage(state.settings.currentPage);
@@ -295,8 +587,9 @@ function render() {
   applySearchEngineControl();
   renderShortcuts();
   renderDots();
-  els.emptyState.hidden = state.shortcuts.length > 0;
+  els.emptyState.hidden = state.shortcuts.length > 0 || editMode;
   scrollToShortcutPage(state.settings.currentPage, { smooth: false });
+  renderSyncAlert();
 }
 
 function applyDensity() {
@@ -324,15 +617,11 @@ function renderShortcuts() {
   }).join('');
 
   if (movedShortcutId) {
-    const movedCard = activeShortcutPage()?.querySelector(`[data-id="${movedShortcutId}"]`);
+    const movedCard = activeShortcutPage()?.querySelector(`[data-id="${CSS.escape(movedShortcutId)}"]`);
     requestAnimationFrame(() => movedCard?.classList.add('moved-pop'));
     setTimeout(() => movedCard?.classList.remove('moved-pop'), 320);
     movedShortcutId = null;
   }
-}
-
-function activeShortcutPage() {
-  return els.shortcutPages.querySelector(`.shortcut-page[data-page="${state.settings.currentPage}"]`);
 }
 
 function updateActivePageState() {
@@ -344,23 +633,24 @@ function updateActivePageState() {
 
 function renderPageContent(page) {
   const items = pageItems(page);
-  return editMode
-    ? renderShortcutSlots(items, pageStartIndex(page))
-    : items.map(renderShortcut).join('');
-}
-
-function renderShortcutSlots(items, start = currentPageStartIndex()) {
-  return Array.from({ length: PAGE_CAPACITY }, (_, index) => {
-    const item = items[index];
-    return renderShortcutSlot(item, start + index, index);
-  }).join('');
+  if (!editMode) return items.map(renderShortcut).join('');
+  const start = pageStartIndex(page);
+  return Array.from({ length: PAGE_CAPACITY }, (_, index) => renderShortcutSlot(items[index], start + index, index)).join('');
 }
 
 function renderShortcutSlot(item, globalIndex, slotIndex) {
   if (!item && globalIndex === state.shortcuts.length) {
-    return renderAddShortcutSlot(globalIndex, slotIndex);
+    return `
+      <div class="shortcut-slot add-slot" data-global-index="${globalIndex}" data-slot-index="${slotIndex}">
+        <button class="add-shortcut-tile" type="button" data-action="add-shortcut" title="添加网站" aria-label="添加网站">
+          <span class="shortcut-icon add-shortcut-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M12 5.5v13M5.5 12h13"/></svg>
+          </span>
+          <span class="shortcut-title">添加</span>
+        </button>
+      </div>
+    `;
   }
-
   const size = item ? ` ${item.size}` : '';
   const empty = item ? '' : ' empty';
   return `
@@ -370,34 +660,16 @@ function renderShortcutSlot(item, globalIndex, slotIndex) {
   `;
 }
 
-function renderAddShortcutSlot(globalIndex, slotIndex) {
-  return `
-    <div class="shortcut-slot add-slot" data-global-index="${globalIndex}" data-slot-index="${slotIndex}">
-      <button class="add-shortcut-tile" type="button" data-action="add-shortcut" title="添加网站" aria-label="添加网站">+</button>
-    </div>
-  `;
-}
-
-function handleShortcutContextMenu(event) {
-  const card = event.target.closest('.shortcut-card');
-  if (!card || event.target.closest('[data-action]')) return;
-  event.preventDefault();
-  enterEditMode();
-}
-
 function renderShortcut(item) {
+  const id = escapeHtml(item.id);
   const title = escapeHtml(item.title);
-  const url = escapeHtml(item.url);
-  const iconSources = iconSourceList(item);
-  const favicon = iconSources[0];
-  const fallbacks = escapeHtml(JSON.stringify(iconSources.slice(1)));
-  const draggable = editMode ? 'true' : 'false';
-
   return `
-    <div class="shortcut-card ${item.size}" role="link" tabindex="0" data-id="${item.id}" data-url="${url}" draggable="${draggable}" title="${title}">
+    <div class="shortcut-card ${item.size}" role="link" tabindex="0" data-id="${id}" data-url="${escapeHtml(item.url)}" draggable="${editMode}" title="${title}">
       <span class="shortcut-icon">
-        <img src="${favicon}" alt="" loading="lazy" data-fallbacks="${fallbacks}" data-fallback-index="0">
-        <span class="shortcut-edit-marker" aria-hidden="true">✎</span>
+        <img src="${escapeHtml(iconSrcFor(item))}" alt="" draggable="false" decoding="async">
+        <button class="shortcut-remove" type="button" data-action="remove-shortcut" data-id="${id}" tabindex="${editMode ? 0 : -1}" aria-label="删除 ${title}" title="删除">
+          <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3.6 3.6l4.8 4.8M8.4 3.6l-4.8 4.8"/></svg>
+        </button>
       </span>
       <span class="shortcut-title">${title}</span>
     </div>
@@ -410,95 +682,235 @@ function renderDots() {
     els.pageDots.innerHTML = '';
     return;
   }
-
   els.pageDots.innerHTML = Array.from({ length: count }, (_, index) => {
     const active = index === state.settings.currentPage ? ' active' : '';
     return `<button class="page-dot${active}" type="button" data-action="go-page" data-page="${index}" aria-label="第 ${index + 1} 页"></button>`;
   }).join('');
 }
 
-function iconSourceList(item) {
-  const sources = [];
-  const direct = directFaviconUrls(item.url);
-  if (item.iconId && activeIconUrls.has(item.iconId)) sources.push(activeIconUrls.get(item.iconId));
-  if (isImageDataUrl(item.customIcon)) sources.push(item.customIcon);
-  if (isHttpUrl(item.iconUrl)) sources.push(item.iconUrl);
-  sources.push(direct.appleTouch);
-  sources.push(direct.png32);
-  sources.push(highResolutionFaviconUrl(item.url));
-  if (hasChromeRuntime) sources.push(chromeFaviconUrl(item.url, 128));
-  sources.push(duckDuckGoFaviconUrl(item.url));
-  sources.push(direct.ico);
-  sources.push(placeholderIcon(item.title));
-  return [...new Set(sources.filter(Boolean))];
+// ------------------------------------------------------------------ icons
+
+function iconKeyFor(item) {
+  if (item.icon?.type === 'letter') return 'letter';
+  if (item.icon?.type === 'blob') return `blob:${item.icon.hash}`;
+  if (item.icon?.type === 'url') return `url:${item.icon.url}`;
+  return `auto:${urlKey(item.url)}`;
 }
 
-function iconCandidatesForUrl(url, title = '', pageCandidates = []) {
-  const direct = directFaviconUrls(url);
-  const candidates = [
-    ...pageCandidates,
-    { kind: 'apple-touch', url: direct.appleTouch },
-    { kind: 'png32', url: direct.png32 },
-    { kind: 'google', url: highResolutionFaviconUrl(url) },
-    { kind: 'duckduckgo', url: duckDuckGoFaviconUrl(url) },
-    { kind: 'favicon', url: direct.ico },
-    { kind: 'fallback', url: placeholderIcon(title || hostnameFromUrl(url)) },
-  ];
-
-  if (hasChromeRuntime) {
-    candidates.splice(3, 0, { kind: 'chrome', url: chromeFaviconUrl(url, 128) });
+function iconSrcFor(item) {
+  const key = iconKeyFor(item);
+  if (key !== 'letter') {
+    const shown = iconDisplay.get(item.id);
+    if (shown && (shown.key === key || shown.interim)) return shown.url;
   }
+  return iconKit.letterTile(item.title, item.url);
+}
 
-  const seen = new Set();
-  return candidates.filter(candidate => {
-    if (!candidate.url || seen.has(candidate.url)) return false;
-    seen.add(candidate.url);
-    return true;
+function setIconDisplay(id, key, blob, { interim = false } = {}) {
+  const previous = iconDisplay.get(id);
+  if (previous) URL.revokeObjectURL(previous.url);
+  iconDisplay.set(id, { key, url: URL.createObjectURL(blob), interim });
+}
+
+function dropIconDisplay(id) {
+  const previous = iconDisplay.get(id);
+  if (previous) URL.revokeObjectURL(previous.url);
+  iconDisplay.delete(id);
+}
+
+async function hydrateShortcutIcons() {
+  const records = await getAllIconRecords().catch(() => []);
+  const byId = new Map(records.map(record => [record.id, record]));
+  const live = new Set(state.shortcuts.map(item => item.id));
+  for (const id of [...iconDisplay.keys()]) if (!live.has(id)) dropIconDisplay(id);
+
+  for (const item of state.shortcuts) {
+    const key = iconKeyFor(item);
+    const shown = iconDisplay.get(item.id);
+    if (key === 'letter') {
+      dropIconDisplay(item.id);
+      continue;
+    }
+    if (shown?.key === key && !shown.interim) continue;
+
+    if (item.icon?.type === 'blob') {
+      const stored = await getBlobRecord(item.icon.hash).catch(() => null);
+      if (stored?.blob) setIconDisplay(item.id, key, stored.blob);
+      continue;
+    }
+
+    const record = byId.get(item.id);
+    if (record && record.pipeline === iconKit.PIPELINE && record.key === key) {
+      if (record.blob) setIconDisplay(item.id, key, record.blob);
+      else if (!shown?.interim) dropIconDisplay(item.id);
+    } else if (record?.blob && (record.pipeline ? record.key === key : legacyRecordMatches(record, item))) {
+      // Drawn by an older version: keep showing it until it is redrawn.
+      if (!shown) setIconDisplay(item.id, key, record.blob, { interim: true });
+    } else if (shown && shown.key !== key) {
+      dropIconDisplay(item.id);
+    }
+  }
+}
+
+// Version 1 pictures name their site in the source address (the site itself,
+// or a favicon service asked about it); skip them once the address changed.
+function legacyRecordMatches(record, item) {
+  const host = hostnameFromUrl(item.url);
+  if (!host) return false;
+  let source = String(record.sourceUrl || '');
+  try {
+    source = decodeURIComponent(source);
+  } catch {
+    // Keep the raw address.
+  }
+  return source.toLowerCase().includes(host.toLowerCase());
+}
+
+function refreshIconElements(id) {
+  const item = state.shortcuts.find(shortcut => shortcut.id === id);
+  if (!item) return;
+  const src = iconSrcFor(item);
+  document.querySelectorAll(`.shortcut-card[data-id="${CSS.escape(id)}"] .shortcut-icon img`).forEach(img => {
+    if (img.getAttribute('src') !== src) img.src = src;
   });
 }
 
-function highResolutionFaviconUrl(url) {
-  const favicon = new URL('https://www.google.com/s2/favicons');
-  favicon.searchParams.set('domain_url', siteOrigin(url));
-  favicon.searchParams.set('sz', '128');
-  return favicon.toString();
+function iconResolverDisabled() {
+  return Boolean(globalThis.__TOMORIN_DISABLE_AUTO_ICON_CACHE);
 }
 
-function chromeFaviconUrl(url, size) {
-  if (!hasChromeRuntime) {
-    return '';
+async function queueStaleIcons() {
+  if (iconResolverDisabled()) return;
+  const records = await getAllIconRecords().catch(() => []);
+  const byId = new Map(records.map(record => [record.id, record]));
+  const live = new Set(state.shortcuts.map(item => item.id));
+  for (const record of records) {
+    if (!live.has(record.id)) deleteIconRecord(record.id).catch(() => {});
   }
-
-  const favicon = new URL(chrome.runtime.getURL('/_favicon/'));
-  favicon.searchParams.set('pageUrl', siteOrigin(url));
-  favicon.searchParams.set('size', String(size));
-  return favicon.toString();
+  const now = Date.now();
+  for (const item of orderedShortcuts()) {
+    const key = iconKeyFor(item);
+    if (key === 'letter' || item.icon?.type === 'blob') continue;
+    const record = byId.get(item.id);
+    const current = record && record.pipeline === iconKit.PIPELINE && record.key === key;
+    if (!current) {
+      queueIcon(item.id);
+      continue;
+    }
+    const age = now - (record.resolvedAt || 0);
+    if (record.transient && age > transientRetryDelay(record.attempts)) queueIcon(item.id);
+    else if (!record.blob && age > ICON_RECHECK_MISSING_MS) queueIcon(item.id);
+    else if (record.blob && Math.min(record.width || 0, record.height || 0) < 64 && age > ICON_RECHECK_SMALL_MS) queueIcon(item.id);
+  }
 }
 
-function duckDuckGoFaviconUrl(url) {
-  const host = hostnameFromUrl(url);
-  return host ? `https://icons.duckduckgo.com/ip3/${encodeURIComponent(host)}.ico` : '';
+// 20 minutes, then 1 h, 3 h, 9 h … up to 3 days, so a favicon service that is
+// never reachable from this network is not asked again every few minutes.
+function transientRetryDelay(attempts = 1) {
+  return Math.min(ICON_RETRY_TRANSIENT_MS * 3 ** Math.max(0, attempts - 1), ICON_RECHECK_SMALL_MS);
 }
 
-function directFaviconUrls(url) {
-  const origin = siteOrigin(url);
-  return {
-    ico: new URL('/favicon.ico', origin).toString(),
-    appleTouch: new URL('/apple-touch-icon.png', origin).toString(),
-    png32: new URL('/favicon-32x32.png', origin).toString(),
-  };
+function queueIcon(id) {
+  if (iconResolverDisabled() || iconQueued.has(id)) return;
+  iconQueued.add(id);
+  iconQueue.push(id);
+  while (iconWorkers < ICON_WORKERS && iconQueue.length) {
+    iconWorkers += 1;
+    runIconWorker().finally(() => { iconWorkers -= 1; });
+  }
 }
 
-function placeholderIcon(title) {
-  const letter = cleanShortcutTitle(title).charAt(0).toUpperCase() || '?';
-  const svg = `
-    <svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
-      <rect width="128" height="128" rx="32" fill="#eef2f6"/>
-      <text x="64" y="78" text-anchor="middle" font-family="Arial, sans-serif" font-size="56" font-weight="700" fill="#475467">${escapeSvg(letter)}</text>
-    </svg>
-  `.trim();
-  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
+async function runIconWorker() {
+  while (iconQueue.length) {
+    const id = iconQueue.shift();
+    try {
+      await resolveIcon(id);
+    } catch {
+      // A failed lookup only means the letter tile stays for now.
+    } finally {
+      iconQueued.delete(id);
+    }
+  }
 }
+
+// Looks up the picture for one shortcut. Only the local cache changes; the
+// shortcut itself is untouched, so this never triggers a sync.
+async function resolveIcon(id) {
+  const item = state.shortcuts.find(shortcut => shortcut.id === id);
+  if (!item) return;
+  const key = iconKeyFor(item);
+  if (key === 'letter' || item.icon?.type === 'blob') return;
+  if (navigator.onLine === false) return;
+
+  let result = null;
+  let reachable = true;
+  let complete = true;
+  let retry = false;
+  if (item.icon?.type === 'url') {
+    const picked = await iconKit.resolveFromUrl(item.icon.url);
+    result = picked.result;
+    // The picked picture could not be fetched right now: show the automatic
+    // one meanwhile and try the picked one again later.
+    if (!result && !picked.complete) retry = true;
+  }
+  if (!result) {
+    const found = await iconKit.resolveBest(item.url);
+    result = found.result;
+    reachable = found.reachable;
+    complete = found.complete;
+  }
+  if (!result && !reachable) return;
+
+  const latest = state.shortcuts.find(shortcut => shortcut.id === id);
+  if (!latest || iconKeyFor(latest) !== key) return;
+  await storeIconResult(id, key, result, { complete: complete && !retry, retry });
+}
+
+function iconSide(entry) {
+  if (!entry?.blob) return -1;
+  if (entry.kind === 'legacy') return 0;
+  return Math.min(entry.width || 0, entry.height || 0);
+}
+
+async function storeIconResult(id, key, result, { complete = true, retry = false } = {}) {
+  const existing = await getIconRecord(id).catch(() => null);
+  const shown = iconDisplay.get(id);
+  const sameTarget = existing?.blob && (existing.key === key || (shown?.interim && existing.pipeline !== iconKit.PIPELINE));
+  // A lookup that found nothing, or was cut short, never replaces a picture
+  // with a worse one (for example another tab finishing a slower lookup). A
+  // tile drawn by an older version is only kept when nothing was found.
+  const currentStyle = existing?.pipeline === iconKit.PIPELINE;
+  if (sameTarget && (!result || (currentStyle && !complete && iconSide(existing) >= iconSide(result)))) {
+    result = {
+      blob: existing.blob,
+      sourceUrl: existing.sourceUrl || '',
+      width: existing.width || 0,
+      height: existing.height || 0,
+      kind: existing.pipeline ? existing.kind : 'legacy',
+    };
+  }
+  // Some requests failed: a sharper icon may exist, so look again later.
+  const transient = retry || (!complete && iconSide(result) < ICON_SHARP_SIDE);
+  const attempts = transient ? ((existing?.key === key && existing.transient ? existing.attempts || 0 : 0) + 1) : 0;
+  await saveIconRecord({
+    id,
+    key,
+    pipeline: iconKit.PIPELINE,
+    blob: result?.blob || null,
+    sourceUrl: result?.sourceUrl || '',
+    width: result?.width || 0,
+    height: result?.height || 0,
+    kind: result?.kind || 'letter',
+    transient,
+    attempts,
+    resolvedAt: Date.now(),
+  });
+  if (result?.blob) setIconDisplay(id, key, result.blob);
+  else dropIconDisplay(id);
+  refreshIconElements(id);
+}
+
+// ---------------------------------------------------------------- search
 
 async function handleSearch(event) {
   event.preventDefault();
@@ -540,21 +952,22 @@ function looksLikeUrl(value) {
     || /^[a-z0-9-]+(\.[a-z0-9-]+)+(:\d+)?(\/|$)/i.test(value);
 }
 
-function normalizeUrl(value) {
-  const trimmed = value.trim();
-  if (/^https?:\/\//i.test(trimmed)) return trimmed;
-  if (/^localhost(:\d+)?(\/|$)/i.test(trimmed)) return `http://${trimmed}`;
-  return `https://${trimmed}`;
+function normalizeSearchEngine(searchEngine) {
+  return SEARCH_ENGINES.has(searchEngine) ? searchEngine : 'default';
 }
 
-function siteOrigin(url) {
-  try {
-    const parsed = new URL(normalizeUrl(url));
-    return `${parsed.origin}/`;
-  } catch {
-    return normalizeUrl(url);
-  }
+function searchEngineLabel(searchEngine) {
+  return { default: '默认', bing: 'Bing' }[normalizeSearchEngine(searchEngine)];
 }
+
+async function setSearchEngine(searchEngine) {
+  state.settings.searchEngine = normalizeSearchEngine(searchEngine);
+  await persistState();
+  applySearchEngineControl();
+  showToast(`搜索：${searchEngineLabel(state.settings.searchEngine)}`);
+}
+
+// ---------------------------------------------------------------- clicks
 
 async function handleDocumentClick(event) {
   const card = event.target.closest('.shortcut-card');
@@ -577,105 +990,51 @@ async function handleDocumentClick(event) {
   }
 
   const { action } = actionTarget.dataset;
-  if (action === 'add-shortcut') {
-    if (editMode) event.preventDefault();
-    openShortcutDialog();
-    return;
-  }
-
-  if (action === 'close-dialog') {
-    closeShortcutDialog();
-    return;
-  }
-
-  if (action === 'open-sync-dialog') {
-    openSyncDialog();
-    return;
-  }
-
-  if (action === 'close-sync-dialog') {
-    closeSyncDialog();
-    return;
-  }
-
-  if (action === 'sync-now') {
-    await syncNowFromDialog();
-    return;
-  }
-
-  if (action === 'toggle-sync-token') {
-    toggleSyncTokenVisibility(actionTarget);
-    return;
-  }
-
-  if (action === 'copy-sync-token') {
-    await copySyncToken();
-    return;
-  }
-
-  if (action === 'upload-sync-wallpaper') {
-    await uploadWallpaperToSyncServer();
-    return;
-  }
-
-  if (action === 'download-sync-wallpaper') {
-    await downloadWallpaperFromSyncServer();
-    return;
-  }
-
-  if (action === 'delete-shortcut') {
-    await deleteEditingShortcut();
-    return;
-  }
-
-  if (action === 'clear-shortcut-icon') {
-    pendingCustomIcon = '';
-    pendingIconUrl = '';
-    pendingIconCleared = true;
-    renderIconPreview();
-    return;
-  }
-
-  if (action === 'select-icon') {
-    const selectedIcon = actionTarget.dataset.iconUrl || '';
-    pendingCustomIcon = isImageDataUrl(selectedIcon) ? selectedIcon : '';
-    pendingIconUrl = pendingCustomIcon ? '' : selectedIcon;
-    pendingIconCleared = false;
-    renderIconPreview();
-    return;
-  }
-
-  if (action === 'go-page') {
-    await goToPage(Number(actionTarget.dataset.page));
-    return;
-  }
-
-  if (action === 'set-density') {
-    await setDensity(actionTarget.dataset.density);
-    return;
-  }
-
-  if (action === 'set-search-engine') {
-    await setSearchEngine(actionTarget.dataset.searchEngine);
-    return;
-  }
-
-  if (action === 'reset-wallpaper') {
-    await resetWallpaper();
-  }
+  const handlers = {
+    'add-shortcut': () => {
+      if (editMode) event.preventDefault();
+      openShortcutDialog();
+    },
+    'remove-shortcut': () => removeShortcut(actionTarget.dataset.id, { undoable: true }),
+    'close-dialog': () => closeShortcutDialog(),
+    'delete-shortcut': () => deleteEditingShortcut(),
+    'select-icon': () => selectDialogIcon(actionTarget),
+    'open-sync-dialog': () => openSyncDialog(),
+    'close-sync-dialog': () => closeSyncDialog(),
+    'toggle-sync-password': () => toggleSyncPasswordVisibility(actionTarget),
+    'sync-now': () => syncNowFromDialog(),
+    'sync-choice-confirm': () => confirmSyncChoice(),
+    'sync-choice-later': () => showSyncMain(),
+    'restore-backup': () => restoreBackup(actionTarget),
+    'go-page': () => goToPage(Number(actionTarget.dataset.page)),
+    'set-density': () => setDensity(actionTarget.dataset.density),
+    'set-search-engine': () => setSearchEngine(actionTarget.dataset.searchEngine),
+    'reset-wallpaper': () => resetWallpaper(),
+  };
+  await handlers[action]?.();
 }
 
 function shouldExitEditModeForClick(event) {
+  // A target removed by another handler (for example the undo button) was not
+  // a click on empty space.
+  if (!event.target.isConnected) return false;
   return !els.dialog.open
     && !els.syncDialog.open
     && !event.target.closest('.settings-menu')
-    && !event.target.closest('.shortcut-dialog');
+    && !event.target.closest('.shortcut-dialog')
+    && !event.target.closest('.toast');
+}
+
+function handleShortcutContextMenu(event) {
+  const card = event.target.closest('.shortcut-card');
+  if (!card || event.target.closest('[data-action]')) return;
+  event.preventDefault();
+  enterEditMode();
 }
 
 function enterEditMode() {
   if (editMode) return;
   editMode = true;
-  showToast('进入编辑模式');
   render();
 }
 
@@ -684,37 +1043,188 @@ function exitEditMode() {
   editMode = false;
   draggedId = null;
   setActiveDropSlot(null);
-  showToast('退出编辑模式');
   render();
 }
+
+function handleKeydown(event) {
+  if (event.key === 'Escape' && els.dialog.open) {
+    closeShortcutDialog();
+    return;
+  }
+  if (event.key === 'Escape' && els.syncDialog.open) {
+    closeSyncDialog();
+    return;
+  }
+  if (event.key === 'Escape' && editMode) {
+    exitEditMode();
+    return;
+  }
+
+  const typing = event.target.closest?.('input, textarea, select, [contenteditable="true"]');
+  const dialogOpen = els.dialog.open || els.syncDialog.open;
+  if (!typing && !dialogOpen) {
+    if (event.key === 'ArrowLeft') goToPage(state.settings.currentPage - 1);
+    if (event.key === 'ArrowRight') goToPage(state.settings.currentPage + 1);
+  }
+
+  const focusedCard = document.activeElement?.closest?.('.shortcut-card');
+  if (!focusedCard || dialogOpen || document.activeElement?.closest('[data-action]')) return;
+  if (event.key === 'Enter' || event.key === ' ') {
+    event.preventDefault();
+    if (editMode) openShortcutDialog(focusedCard.dataset.id);
+    else window.location.href = focusedCard.dataset.url;
+  }
+  if (editMode && (event.key === 'Delete' || event.key === 'Backspace')) {
+    event.preventDefault();
+    removeShortcut(focusedCard.dataset.id, { undoable: true });
+  }
+}
+
+// ------------------------------------------------------------ shortcuts
 
 async function setDensity(density) {
-  if (!['small', 'medium', 'large'].includes(density)) return;
+  if (!core.SIZES.includes(density)) return;
   state.settings.iconDensity = density;
-  await saveState();
+  state.settings.iconDensityAt = nextStamp();
+  await commitChange({ touchesShortcuts: false });
   render();
-  showToast(`图标大小：${densityLabel(density)}`);
+  showToast(`图标大小：${{ small: '小', medium: '中', large: '大' }[density]}`);
 }
 
-function densityLabel(density) {
-  return { small: '小', medium: '中', large: '大' }[density] || '小';
+async function handleShortcutSubmit(event) {
+  event.preventDefault();
+  const title = core.cleanTitle(els.titleInput.value);
+  const rawUrl = els.urlInput.value.trim();
+  const size = els.shortcutForm.elements.shortcutSize.value;
+  if (!title || !rawUrl) return;
+  const url = normalizeUrl(rawUrl);
+  if (!isHttpUrl(url)) {
+    showToast('网址格式不正确');
+    return;
+  }
+
+  const duplicate = state.shortcuts.find(item => item.id !== editingId && urlKey(item.url) === urlKey(url));
+  if (duplicate) {
+    showToast(`这个网址已经在收藏里了：${duplicate.title}`);
+    return;
+  }
+
+  const icon = await dialogIconForSave();
+  const previous = editingId ? state.shortcuts.find(item => item.id === editingId) : null;
+  if (editingId && !previous) {
+    showToast('这个网站已在别处被删除');
+    closeShortcutDialog();
+    return;
+  }
+
+  let saved;
+  if (previous) {
+    const changed = previous.title !== title || previous.url !== url || previous.size !== size
+      || JSON.stringify(previous.icon || null) !== JSON.stringify(icon || null);
+    if (urlKey(previous.url) !== urlKey(url)) {
+      // The cached picture belongs to the old address.
+      dropIconDisplay(previous.id);
+      await deleteIconRecord(previous.id).catch(() => {});
+    }
+    saved = changed ? { ...previous, title, url, size, icon, editedAt: nextStamp() } : previous;
+    state.shortcuts = state.shortcuts.map(item => (item.id === previous.id ? saved : item));
+    if (changed) await commitChange();
+    showToast(changed ? '已更新' : '没有改动');
+  } else {
+    const ordered = orderedShortcuts();
+    const stamp = nextStamp();
+    saved = {
+      id: crypto.randomUUID(),
+      title,
+      url,
+      size: core.SIZES.includes(size) ? size : 'small',
+      icon,
+      pos: core.keyBetween(ordered.length ? ordered[ordered.length - 1].pos : null, null),
+      editedAt: stamp,
+      movedAt: stamp,
+      createdAt: stamp,
+    };
+    state.shortcuts.push(saved);
+    await commitChange();
+    state.settings.currentPage = pageCount() - 1;
+    showToast('已添加');
+  }
+
+  await applyDialogIconToCache(saved);
+  closeShortcutDialog();
+  render();
+  if (!iconResolverDisabled()) {
+    const record = await getIconRecord(saved.id).catch(() => null);
+    if (!record || record.key !== iconKeyFor(saved) || record.pipeline !== iconKit.PIPELINE) queueIcon(saved.id);
+  }
 }
 
-async function setSearchEngine(searchEngine) {
-  const nextEngine = normalizeSearchEngine(searchEngine);
-  state.settings.searchEngine = nextEngine;
-  await saveState({ sync: false });
-  applySearchEngineControl();
-  showToast(`搜索：${searchEngineLabel(nextEngine)}`);
+async function removeShortcut(id, { undoable = false } = {}) {
+  const item = state.shortcuts.find(shortcut => shortcut.id === id);
+  if (!item) return;
+  const card = activeShortcutPage()?.querySelector(`[data-id="${CSS.escape(id)}"]`);
+  card?.classList.add('removing');
+  await sleep(card ? 200 : 0);
+
+  const iconRecord = await getIconRecord(id).catch(() => null);
+  // Change and save in one step so a write from another tab cannot slip in between.
+  state.shortcuts = state.shortcuts.filter(shortcut => shortcut.id !== id);
+  state.tombstones = [...state.tombstones.filter(tomb => tomb.to || tomb.id !== id), { id, deletedAt: nextStamp() }];
+  await commitChange();
+  dropIconDisplay(id);
+  await deleteIconRecord(id).catch(() => {});
+  render();
+
+  if (undoable) showToast(`已删除「${item.title}」`, { label: '撤销', run: () => restoreShortcut(item, iconRecord) });
+  else showToast('已删除');
 }
 
-function searchEngineLabel(searchEngine) {
-  return { default: '默认', bing: 'Bing' }[normalizeSearchEngine(searchEngine)];
+async function restoreShortcut(item, iconRecord) {
+  if (state.shortcuts.some(shortcut => shortcut.id === item.id)) return;
+  const duplicate = state.shortcuts.find(shortcut => urlKey(shortcut.url) === urlKey(item.url));
+  if (duplicate) {
+    showToast('这个网址已经重新添加过了');
+    return;
+  }
+  state.tombstones = state.tombstones.filter(tomb => tomb.to || tomb.id !== item.id);
+  state.shortcuts.push({ ...item, editedAt: nextStamp() });
+  await commitChange();
+  if (iconRecord) {
+    await saveIconRecord(iconRecord).catch(() => {});
+    if (iconRecord.blob) setIconDisplay(item.id, iconRecord.key || iconKeyFor(item), iconRecord.blob, { interim: !iconRecord.pipeline });
+  }
+  render();
+  showToast('已恢复');
 }
 
-function normalizeSearchEngine(searchEngine) {
-  return SEARCH_ENGINES.has(searchEngine) ? searchEngine : 'default';
+async function deleteEditingShortcut() {
+  if (!editingId) return;
+  const id = editingId;
+  closeShortcutDialog();
+  await removeShortcut(id);
 }
+
+function reorderShortcutToIndex(sourceId, targetIndex) {
+  const ordered = orderedShortcuts();
+  const from = ordered.findIndex(item => item.id === sourceId);
+  if (from === -1 || !Number.isFinite(targetIndex)) return false;
+  const rest = ordered.filter(item => item.id !== sourceId);
+  const at = Math.max(0, Math.min(targetIndex, rest.length));
+  if (at === from) return false;
+
+  const plan = core.planInsert(rest, at);
+  const stamp = nextStamp();
+  const rekey = new Map(plan.rekey.map(entry => [entry.id, entry.pos]));
+  state.shortcuts = withOrder(core.sortShortcuts(state.shortcuts.map(item => {
+    if (item.id === sourceId) return { ...item, pos: plan.pos, movedAt: stamp };
+    if (rekey.has(item.id)) return { ...item, pos: rekey.get(item.id), movedAt: stamp };
+    return item;
+  })));
+  movedShortcutId = sourceId;
+  return true;
+}
+
+// --------------------------------------------------------- edit dialog
 
 function openShortcutDialog(id = null) {
   editingId = id;
@@ -722,404 +1232,181 @@ function openShortcutDialog(id = null) {
   els.dialogTitle.textContent = item ? '编辑网站' : '添加网站';
   els.titleInput.value = item?.title || '';
   els.urlInput.value = item?.url || '';
-  const size = item?.size || 'small';
-  els.shortcutForm.elements.shortcutSize.value = size;
-  pendingCustomIcon = item?.customIcon || '';
-  pendingIconUrl = item?.iconUrl || '';
-  pendingIconCleared = false;
-  pendingOriginalUrl = item?.url || '';
+  els.shortcutForm.elements.shortcutSize.value = item?.size || 'small';
   els.iconInput.value = '';
-  renderIconPreview();
   els.deleteButton.hidden = !item;
+  dialogIcon = dialogIconFromItem(item);
+  dialogChoices = [];
+  dialogChoicesKey = '';
+  dialogChoicesLoading = false;
+  renderIconOptions();
+  if (item) loadDialogChoices(item.url);
+  if (item?.icon?.type === 'blob') loadDialogCustomPreview(item.icon);
   els.dialog.showModal();
   requestAnimationFrame(() => els.titleInput.focus());
 }
 
 function closeShortcutDialog() {
   editingId = null;
-  pendingCustomIcon = '';
-  pendingIconUrl = '';
-  pendingIconCleared = false;
-  pendingOriginalUrl = '';
+  dialogIcon = { choice: 'auto' };
+  clearTimeout(dialogUrlTimer);
   els.iconInput.value = '';
-  els.dialog.close();
+  if (els.dialog.open) els.dialog.close();
+  releaseDialogObjectUrls();
 }
 
-function openSyncDialog() {
-  const sync = state.sync || {};
-  els.syncEnabled.checked = Boolean(sync.enabled);
-  els.syncEndpoint.value = sync.endpoint || '';
-  els.syncToken.value = sync.token || '';
-  resetSyncTokenVisibility();
-  renderWallpaperSyncStatus();
-  renderSyncStatus();
-  els.syncDialog.showModal();
-  requestAnimationFrame(() => els.syncEndpoint.focus());
+function releaseDialogObjectUrls() {
+  for (const url of dialogObjectUrls) URL.revokeObjectURL(url);
+  dialogObjectUrls.clear();
+  dialogChoices = [];
+  dialogChoicesKey = '';
+  dialogChoicesLoading = false;
 }
 
-function closeSyncDialog() {
-  resetSyncTokenVisibility();
-  els.syncDialog.close();
+function dialogObjectUrl(blob) {
+  const url = URL.createObjectURL(blob);
+  dialogObjectUrls.add(url);
+  return url;
 }
 
-function resetSyncTokenVisibility() {
-  els.syncToken.type = 'password';
-  const button = document.querySelector('[data-action="toggle-sync-token"]');
-  if (!button) return;
-  button.textContent = '显示';
-  button.setAttribute('aria-pressed', 'false');
+function dialogIconFromItem(item) {
+  const icon = item?.icon;
+  if (icon?.type === 'url') return { choice: 'url', url: icon.url };
+  if (icon?.type === 'letter') return { choice: 'letter' };
+  if (icon?.type === 'blob') return { choice: 'blob', hash: icon.hash, mime: icon.mime, blob: null, preview: '' };
+  return { choice: 'auto' };
 }
 
-function toggleSyncTokenVisibility(button) {
-  const visible = els.syncToken.type === 'text';
-  els.syncToken.type = visible ? 'password' : 'text';
-  button.textContent = visible ? '显示' : '隐藏';
-  button.setAttribute('aria-pressed', String(!visible));
+async function loadDialogCustomPreview(icon) {
+  const record = await getBlobRecord(icon.hash).catch(() => null);
+  if (!record?.blob || dialogIcon.choice !== 'blob' || dialogIcon.hash !== icon.hash) return;
+  dialogIcon.blob = record.blob;
+  dialogIcon.preview = dialogObjectUrl(record.blob);
+  renderIconOptions();
 }
 
-async function copySyncToken() {
-  const token = els.syncToken.value.trim();
-  if (!token) {
-    showToast('没有可复制的令牌');
-    return;
-  }
+function handleDialogUrlInput() {
+  clearTimeout(dialogUrlTimer);
+  renderIconOptions();
+  const value = els.urlInput.value.trim();
+  if (!value) return;
+  dialogUrlTimer = setTimeout(() => loadDialogChoices(normalizeUrl(value)), 500);
+}
 
+async function loadDialogChoices(url) {
+  const key = urlKey(url);
+  if (!key || key === dialogChoicesKey) return;
+  dialogChoicesKey = key;
+  dialogChoices = [];
+  dialogChoicesLoading = true;
+  renderIconOptions();
+  let choices = [];
   try {
-    await navigator.clipboard.writeText(token);
-    showToast('令牌已复制');
+    choices = await iconKit.listChoices(url);
   } catch {
-    const originalType = els.syncToken.type;
-    els.syncToken.type = 'text';
-    els.syncToken.select();
-    const copied = document.execCommand('copy');
-    els.syncToken.setSelectionRange(0, 0);
-    els.syncToken.type = originalType;
-    showToast(copied ? '令牌已复制' : '复制失败，请先显示后手动复制');
+    choices = [];
   }
+  if (dialogChoicesKey !== key || !els.dialog.open) return;
+  dialogChoices = choices.map(choice => ({ ...choice, preview: dialogObjectUrl(choice.blob) }));
+  dialogChoicesLoading = false;
+  renderIconOptions();
 }
 
-function renderWallpaperSyncStatus(message = '') {
-  if (!els.wallpaperSyncStatus) return;
-  els.wallpaperSyncStatus.textContent = message || '壁纸仅在点击按钮时传输，不参与日常轻量同步；单张最大 100 MB。';
+function dialogPreviewItem() {
+  const url = els.urlInput.value.trim() ? normalizeUrl(els.urlInput.value) : 'https://example.com';
+  return { id: editingId || '', title: els.titleInput.value || hostnameFromUrl(url), url, icon: null };
 }
 
-function setWallpaperSyncBusy(busy, message = '') {
-  wallpaperSyncInFlight = busy;
-  els.uploadWallpaperButton.disabled = busy;
-  els.downloadWallpaperButton.disabled = busy;
-  if (message) renderWallpaperSyncStatus(message);
-}
-
-async function syncCredentialsFromDialog() {
-  const endpoint = normalizeSyncEndpoint(els.syncEndpoint.value);
-  const token = els.syncToken.value.trim();
-  if (!endpoint || !token) throw new Error('sync-config');
-
-  state.sync = {
-    ...(state.sync || {}),
-    enabled: Boolean(els.syncEnabled.checked),
-    endpoint,
-    token,
-  };
-  await persistState(state);
-  return { endpoint, token };
-}
-
-async function uploadWallpaperToSyncServer() {
-  if (wallpaperSyncInFlight) return;
-
-  try {
-    const { endpoint, token } = await syncCredentialsFromDialog();
-    const wallpaper = await getWallpaperBlob();
-    if (!wallpaper) throw new Error('wallpaper-local-missing');
-    if (wallpaper.size > MAX_SYNC_WALLPAPER_BYTES) throw new Error(`wallpaper-local-too-large:${wallpaper.size}`);
-    if (!wallpaper.type.startsWith('image/')) throw new Error('wallpaper-type');
-
-    setWallpaperSyncBusy(true, '正在上传本机壁纸…');
-    await verifyWallpaperSyncCapability(endpoint, wallpaper.size);
-    await wallpaperSyncRequest('PUT', endpoint, token, wallpaper);
-    renderWallpaperSyncStatus(`本机壁纸已上传（${formatBytes(wallpaper.size)}）。`);
-    showToast('壁纸上传完成');
-  } catch (error) {
-    renderWallpaperSyncStatus(`上传失败：${friendlyWallpaperSyncError(error)}`);
-    showToast('壁纸上传失败');
-  } finally {
-    setWallpaperSyncBusy(false);
+function autoPreviewSrc(previewItem) {
+  const existing = editingId ? state.shortcuts.find(item => item.id === editingId) : null;
+  if (existing && urlKey(existing.url) === urlKey(previewItem.url)) {
+    const shown = iconDisplay.get(existing.id);
+    if (shown && (shown.key === `auto:${urlKey(existing.url)}` || shown.interim)) return shown.url;
   }
+  const automatic = dialogChoices.find(choice => !choice.source.startsWith('brand'));
+  return automatic ? automatic.preview : iconKit.letterTile(previewItem.title, previewItem.url);
 }
 
-async function downloadWallpaperFromSyncServer() {
-  if (wallpaperSyncInFlight) return;
+function renderIconOptions() {
+  const preview = dialogPreviewItem();
+  const option = ({ choice, label, src, pressed, extra = '', title = label }) => `
+    <button class="icon-option" type="button" data-action="select-icon" data-icon-choice="${choice}" aria-pressed="${pressed}" title="${escapeHtml(title)}" ${extra}>
+      <span class="icon-option-tile"><img src="${escapeHtml(src)}" alt=""></span>
+      <span class="icon-option-label">${escapeHtml(label)}</span>
+    </button>
+  `;
 
-  try {
-    const { endpoint, token } = await syncCredentialsFromDialog();
-    setWallpaperSyncBusy(true, '正在下载云端壁纸…');
-    await verifyWallpaperSyncCapability(endpoint);
-    const wallpaper = await wallpaperSyncRequest('GET', endpoint, token);
-    if (!wallpaper.size || wallpaper.size > MAX_SYNC_WALLPAPER_BYTES) throw new Error(`wallpaper-local-too-large:${wallpaper.size}`);
-    if (!wallpaper.type.startsWith('image/')) throw new Error('wallpaper-type');
+  const parts = [option({
+    choice: 'auto',
+    label: '自动',
+    title: '自动选择最清晰的图标',
+    src: autoPreviewSrc(preview),
+    pressed: dialogIcon.choice === 'auto',
+  })];
 
-    await saveWallpaperBlob(wallpaper);
-    state.settings.wallpaper = { type: 'uploaded' };
-    await saveState({ sync: false });
-    await applyWallpaper();
-    renderWallpaperSyncStatus(`云端壁纸已下载（${formatBytes(wallpaper.size)}）。`);
-    showToast('壁纸下载完成');
-  } catch (error) {
-    renderWallpaperSyncStatus(`下载失败：${friendlyWallpaperSyncError(error)}`);
-    showToast('壁纸下载失败');
-  } finally {
-    setWallpaperSyncBusy(false);
-  }
-}
-
-async function wallpaperSyncRequest(method, endpoint, token, wallpaper = null) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), WALLPAPER_SYNC_TIMEOUT_MS);
-  try {
-    const response = await fetch(`${endpoint}/api/wallpaper`, {
-      method,
-      cache: 'no-store',
-      credentials: 'omit',
-      signal: controller.signal,
-      headers: {
-        Authorization: `Bearer ${token}`,
-        ...(wallpaper ? { 'Content-Type': wallpaper.type || 'application/octet-stream' } : {}),
-      },
-      body: wallpaper,
-    });
-
-    if (response.status === 401 || response.status === 403) throw new Error('token');
-    if (response.status === 404) {
-      const payload = await response.clone().json().catch(() => ({}));
-      throw new Error(payload.error === 'wallpaper_not_found' ? 'wallpaper-remote-missing' : 'wallpaper-server-outdated');
-    }
-    if (response.status === 413) throw new Error('wallpaper-server-rejected-size');
-    if (response.status === 415) throw new Error('wallpaper-type');
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    return method === 'GET' ? await response.blob() : null;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function verifyWallpaperSyncCapability(endpoint, wallpaperSize = 0) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), SYNC_REQUEST_TIMEOUT_MS);
-  try {
-    const response = await fetch(`${endpoint}/health`, {
-      cache: 'no-store',
-      credentials: 'omit',
-      signal: controller.signal,
-    });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const payload = await response.json();
-    const capabilities = payload?.capabilities;
-    if (!capabilities?.wallpaperSync) throw new Error('wallpaper-server-outdated');
-
-    const serverLimit = Number(capabilities.maxWallpaperBytes || 0);
-    if (wallpaperSize && serverLimit && wallpaperSize > serverLimit) {
-      throw new Error(`wallpaper-server-limit:${serverLimit}`);
-    }
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-function friendlyWallpaperSyncError(error) {
-  if (error?.name === 'AbortError') return '服务器响应超时';
-  if (error?.message === 'sync-config') return '请先填写服务器地址和访问令牌';
-  if (error?.message === 'token') return '令牌不正确';
-  if (error?.message === 'wallpaper-local-missing') return '本机还没有设置壁纸';
-  if (error?.message === 'wallpaper-remote-missing') return '云端没有壁纸，或服务器尚未升级';
-  if (error?.message === 'wallpaper-server-outdated') return '同步服务器尚未升级壁纸同步功能';
-  if (error?.message === 'wallpaper-server-rejected-size') return '服务器或代理拒绝了上传（HTTP 413），请检查 Nginx/CDN 的请求大小限制';
-  if (error?.message?.startsWith('wallpaper-local-too-large:')) {
-    const size = Number(error.message.split(':')[1] || 0);
-    return `处理后的壁纸为 ${formatBytes(size)}，超过 100 MB 限制`;
-  }
-  if (error?.message?.startsWith('wallpaper-server-limit:')) {
-    const limit = Number(error.message.split(':')[1] || 0);
-    return `服务器只允许 ${formatBytes(limit)}，请先升级服务器配置`;
-  }
-  if (error?.message === 'wallpaper-type') return '壁纸格式不受支持';
-  return String(error?.message || '网络不可用').slice(0, 120);
-}
-
-function formatBytes(bytes) {
-  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-async function handleSyncSubmit(event) {
-  event.preventDefault();
-  state.sync = {
-    ...(state.sync || {}),
-    enabled: Boolean(els.syncEnabled.checked),
-    endpoint: normalizeSyncEndpoint(els.syncEndpoint.value),
-    token: els.syncToken.value.trim(),
-    pending: true,
-    lastError: '',
-  };
-  await persistState(state);
-  renderSyncStatus();
-  showToast(state.sync.enabled ? '同步设置已保存' : '同步已关闭');
-  closeSyncDialog();
-  scheduleSync('manual');
-}
-
-async function syncNowFromDialog() {
-  state.sync = {
-    ...(state.sync || {}),
-    enabled: Boolean(els.syncEnabled.checked),
-    endpoint: normalizeSyncEndpoint(els.syncEndpoint.value),
-    token: els.syncToken.value.trim(),
-    pending: true,
-    lastError: '',
-  };
-  await persistState(state);
-  renderSyncStatus('正在同步');
-  await syncStateNow({ force: true });
-  renderSyncStatus();
-}
-
-function renderSyncStatus(override = '') {
-  if (!els.syncStatus) return;
-  if (override) {
-    els.syncStatus.textContent = override;
-    return;
+  // A picture picked earlier that is not among the current results.
+  if (dialogIcon.choice === 'url' && !dialogChoices.some(choice => choice.url === dialogIcon.url)) {
+    const shown = editingId ? iconDisplay.get(editingId) : null;
+    parts.push(option({
+      choice: 'url',
+      label: '当前',
+      title: dialogIcon.url,
+      src: shown?.url || iconKit.letterTile(preview.title, preview.url),
+      pressed: true,
+      extra: `data-icon-url="${escapeHtml(dialogIcon.url)}" data-icon-kind="current"`,
+    }));
   }
 
-  const sync = state.sync || {};
-  if (!sync.enabled) {
-    els.syncStatus.textContent = '未启用。启用后只自动同步收藏网站元数据和图标来源；壁纸仍需手动传输。';
-    return;
-  }
-
-  if (!sync.endpoint || !sync.token) {
-    els.syncStatus.textContent = '请填写服务器地址和访问令牌。';
-    return;
-  }
-
-  if (sync.lastError) {
-    els.syncStatus.textContent = `上次失败：${sync.lastError}`;
-    return;
-  }
-
-  if (sync.pending) {
-    els.syncStatus.textContent = '有本地修改待同步。';
-    return;
-  }
-
-  els.syncStatus.textContent = sync.lastSyncAt
-    ? `上次同步：${new Date(sync.lastSyncAt).toLocaleString()}`
-    : '尚未同步。';
-}
-
-async function handleShortcutSubmit(event) {
-  event.preventDefault();
-  const title = els.titleInput.value.trim();
-  const url = normalizeUrl(els.urlInput.value);
-  const size = els.shortcutForm.elements.shortcutSize.value;
-
-  if (!title || !url) return;
-
-  showToast('正在保存');
-  const now = Date.now();
-
-  if (editingId) {
-    const previous = state.shortcuts.find(shortcut => shortcut.id === editingId);
-    const next = await prepareShortcutForSave({
-      ...previous,
-      id: editingId,
-      title,
-      url,
-      size,
-      updatedAt: now,
-    }, previous);
-    state.shortcuts = state.shortcuts.map(item => (
-      item.id === editingId ? next : item
-    ));
-    showToast('已更新');
-  } else {
-    const id = crypto.randomUUID();
-    const next = await prepareShortcutForSave({
-      id,
-      title,
-      url,
-      size,
-      order: state.shortcuts.length,
-      updatedAt: now,
-    }, null);
-    state.shortcuts.push(next);
-    state.settings.currentPage = pageCount() - 1;
-    showToast('已添加');
-  }
-
-  await saveState();
-  closeShortcutDialog();
-  render();
-}
-
-function normalizeShortcutForSave(item) {
-  const next = { ...item };
-  if (typeof next.iconId !== 'string' || !next.iconId) delete next.iconId;
-  if (!isImageDataUrl(next.customIcon)) delete next.customIcon;
-  if (!isHttpUrl(next.iconUrl)) delete next.iconUrl;
-  if (next.iconId) delete next.customIcon;
-  if (next.customIcon) delete next.iconUrl;
-  return next;
-}
-
-async function prepareShortcutForSave(item, previous) {
-  const next = normalizeShortcutForSave({
-    ...item,
-    iconId: previous?.iconId || '',
-    iconUrl: previous?.iconUrl || '',
-    customIcon: previous?.customIcon || '',
+  dialogChoices.forEach(choice => {
+    const size = choice.isSvg ? 'SVG' : `${Math.min(choice.width, choice.height)}px`;
+    parts.push(option({
+      choice: 'url',
+      label: size,
+      title: choice.url,
+      src: choice.preview,
+      pressed: dialogIcon.choice === 'url' && dialogIcon.url === choice.url,
+      extra: `data-icon-url="${escapeHtml(choice.url)}" data-icon-kind="${escapeHtml(choice.source)}"`,
+    }));
   });
-  const urlChanged = !previous || previous.url !== item.url;
 
-  delete next.customIcon;
-
-  if (pendingCustomIcon) {
-    const blob = dataUrlToBlob(pendingCustomIcon);
-    await saveIconRecord(next.id, blob, 'custom');
-    setActiveIconUrl(next.id, blob);
-    next.iconId = next.id;
-    delete next.iconUrl;
-    return normalizeShortcutForSave(next);
+  if (dialogChoicesLoading) {
+    parts.push('<span class="icon-option is-loading" aria-hidden="true"><span class="icon-option-tile"></span><span class="icon-option-label">查找中</span></span>');
   }
 
-  const candidates = iconCandidatesForUrl(next.url, next.title);
-  const automaticCandidateUrls = candidates
-    .filter(candidate => candidate.kind !== 'fallback')
-    .map(candidate => candidate.url);
-  const selectedSources = pendingIconUrl ? [pendingIconUrl, ...automaticCandidateUrls] : [];
-  const automaticSources = (!previous || urlChanged || pendingIconCleared)
-    ? automaticCandidateUrls
-    : [];
-  const sourceUrls = [...new Set([...selectedSources, ...automaticSources].filter(Boolean))];
+  parts.push(option({
+    choice: 'letter',
+    label: '文字',
+    title: '用名称首字做图标',
+    src: iconKit.letterTile(preview.title, preview.url),
+    pressed: dialogIcon.choice === 'letter',
+  }));
 
-  if (sourceUrls.length) {
-    const cached = await cacheFirstAvailableIcon(next.id, sourceUrls);
-    if (cached) {
-      next.iconId = next.id;
-      next.iconUrl = isHttpUrl(cached.sourceUrl) ? cached.sourceUrl : '';
-      return normalizeShortcutForSave(next);
-    }
+  if (dialogIcon.choice === 'blob') {
+    parts.push(option({
+      choice: 'blob',
+      label: '自定义',
+      src: dialogIcon.preview || iconKit.letterTile(preview.title, preview.url),
+      pressed: true,
+    }));
   }
 
-  if (previous?.iconId && !pendingIconCleared && !urlChanged) {
-    next.iconId = previous.iconId;
-    if (isHttpUrl(previous.iconUrl)) next.iconUrl = previous.iconUrl;
-    return normalizeShortcutForSave(next);
-  }
+  parts.push(`
+    <label class="icon-option upload-option" for="shortcutIconInput" title="上传图片作为图标">
+      <span class="icon-option-tile"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5V5.5m0 0L8 9.5m4-4l4 4M5.5 18.5h13"/></svg></span>
+      <span class="icon-option-label">上传</span>
+    </label>
+  `);
 
-  await deleteIconRecord(next.id);
-  delete next.iconId;
-  delete next.iconUrl;
-  return normalizeShortcutForSave(next);
+  els.iconOptions.innerHTML = parts.join('');
+}
+
+function selectDialogIcon(button) {
+  const choice = button.dataset.iconChoice;
+  if (choice === 'url') dialogIcon = { choice: 'url', url: button.dataset.iconUrl };
+  else if (choice === 'letter') dialogIcon = { choice: 'letter' };
+  else if (choice === 'blob') return;
+  else dialogIcon = { choice: 'auto' };
+  renderIconOptions();
 }
 
 async function handleShortcutIconUpload(event) {
@@ -1130,331 +1417,105 @@ async function handleShortcutIconUpload(event) {
     showToast('请选择图片文件');
     return;
   }
-
   try {
-    pendingCustomIcon = await imageFileToIconDataUrl(file, 256);
-    pendingIconUrl = '';
-    pendingIconCleared = false;
-    renderIconPreview();
+    const blob = await iconKit.normalizeUpload(file);
+    const hash = await iconKit.sha256Hex(await blob.arrayBuffer());
+    dialogIcon = { choice: 'blob', hash, mime: 'image/png', blob, preview: dialogObjectUrl(blob) };
+    renderIconOptions();
     showToast('图标已选择');
   } catch {
     showToast('图标处理失败');
   }
 }
 
-function renderIconPreview() {
-  const url = els.urlInput.value ? normalizeUrl(els.urlInput.value) : 'https://example.com';
-  renderIconCandidates(url);
+async function dialogIconForSave() {
+  if (dialogIcon.choice === 'url' && isHttpUrl(dialogIcon.url)) return { type: 'url', url: dialogIcon.url };
+  if (dialogIcon.choice === 'letter') return { type: 'letter' };
+  if (dialogIcon.choice === 'blob' && dialogIcon.hash) {
+    if (dialogIcon.blob) await saveBlobRecord(dialogIcon.hash, dialogIcon.blob, dialogIcon.mime || 'image/png');
+    return { type: 'blob', hash: dialogIcon.hash, mime: dialogIcon.mime || 'image/png' };
+  }
+  return null;
+}
 
-  if (pendingCustomIcon) {
-    els.iconPreview.innerHTML = `<img src="${escapeHtml(pendingCustomIcon)}" alt="">`;
-    els.clearIconButton.hidden = false;
+// Use what the dialog already downloaded so the tile updates right away.
+async function applyDialogIconToCache(item) {
+  const key = iconKeyFor(item);
+  if (key === 'letter') {
+    dropIconDisplay(item.id);
     return;
   }
-
-  const existing = editingId ? state.shortcuts.find(shortcut => shortcut.id === editingId) : null;
-  const existingIconUrl = existing?.iconId && activeIconUrls.get(existing.iconId);
-  const canUseExisting = existingIconUrl && !pendingIconCleared && url === pendingOriginalUrl;
-  const previewUrl = pendingIconUrl || (canUseExisting ? existingIconUrl : iconCandidatesForUrl(url, els.titleInput.value, pageIconCandidatesForUrl(url))[0]?.url);
-  els.iconPreview.innerHTML = `<img src="${escapeHtml(previewUrl)}" alt="">`;
-  els.clearIconButton.hidden = !(pendingIconUrl || canUseExisting);
-}
-
-function renderIconCandidates(url) {
-  const title = els.titleInput.value || hostnameFromUrl(url);
-  requestPageIconCandidates(url);
-  const candidates = iconCandidatesForUrl(url, title, pageIconCandidatesForUrl(url));
-  els.iconCandidates.innerHTML = candidates.map(candidate => {
-    const selected = !pendingCustomIcon && pendingIconUrl === candidate.url;
-    return `
-      <button class="icon-candidate" type="button" data-action="select-icon" data-icon-kind="${candidate.kind}" data-icon-url="${escapeHtml(candidate.url)}" aria-pressed="${selected}" title="${candidate.kind}">
-        <img src="${escapeHtml(candidate.url)}" alt="" loading="lazy">
-      </button>
-    `;
-  }).join('');
-}
-
-function pageIconCandidatesForUrl(url) {
-  return pageIconCandidateCache.get(iconCandidateCacheKey(url)) || [];
-}
-
-function requestPageIconCandidates(url) {
-  const key = iconCandidateCacheKey(url);
-  if (!key || pageIconCandidateCache.has(key) || pageIconCandidateRequests.has(key)) return;
-
-  const request = discoverPageIconCandidates(url)
-    .then(candidates => {
-      pageIconCandidateCache.set(key, candidates);
-      if (els.urlInput.value && iconCandidateCacheKey(els.urlInput.value) === key && !pendingCustomIcon) {
-        renderIconPreview();
-      }
-    })
-    .catch(() => {
-      pageIconCandidateCache.set(key, []);
-    })
-    .finally(() => {
-      pageIconCandidateRequests.delete(key);
-    });
-
-  pageIconCandidateRequests.set(key, request);
-}
-
-async function discoverPageIconCandidates(url) {
-  const pageUrl = normalizeUrl(url);
-  const response = await fetch(pageUrl, {
-    cache: 'force-cache',
-    credentials: 'omit',
-  });
-  if (!response.ok) return [];
-
-  const html = await response.text();
-  const document = new DOMParser().parseFromString(html, 'text/html');
-  const candidates = [
-    ...declaredIconCandidatesFromDocument(document, response.url || pageUrl),
-    ...brandIconCandidatesFromDocument(document, response.url || pageUrl),
-  ];
-  const manifestUrls = [...document.querySelectorAll('link[rel]')]
-    .filter(link => relValues(link.rel).includes('manifest'))
-    .map(link => absoluteIconUrl(link.getAttribute('href'), response.url || pageUrl))
-    .filter(Boolean);
-
-  for (const manifestUrl of manifestUrls.slice(0, 2)) {
-    candidates.push(...await declaredIconCandidatesFromManifest(manifestUrl));
-  }
-
-  return uniqueIconCandidates(candidates)
-    .sort((a, b) => (b.score || 0) - (a.score || 0))
-    .map(({ kind, url }) => ({ kind, url }))
-    .slice(0, 8);
-}
-
-function declaredIconCandidatesFromDocument(document, baseUrl) {
-  return [...document.querySelectorAll('link[rel][href]')]
-    .flatMap(link => {
-      const rels = relValues(link.rel);
-      const isIcon = rels.includes('icon')
-        || rels.includes('apple-touch-icon')
-        || rels.includes('apple-touch-icon-precomposed')
-        || rels.includes('mask-icon');
-      if (!isIcon) return [];
-
-      const url = absoluteIconUrl(link.getAttribute('href'), baseUrl);
-      if (!url) return [];
-
-      const size = largestDeclaredIconSize(link.getAttribute('sizes'), url);
-      const appleWeight = rels.some(rel => rel.startsWith('apple-touch-icon')) ? 2000 : 0;
-      const maskWeight = rels.includes('mask-icon') ? -500 : 0;
-      return [{ kind: 'page-icon', url, score: 1000 + appleWeight + maskWeight + size }];
-    });
-}
-
-function brandIconCandidatesFromDocument(document, baseUrl) {
-  const metaCandidates = [...document.querySelectorAll('meta[content]')]
-    .flatMap(meta => {
-      const key = `${meta.getAttribute('property') || ''} ${meta.getAttribute('name') || ''} ${meta.getAttribute('itemprop') || ''}`.toLowerCase();
-      const isBrandImage = /\bog:image(?::url)?\b|twitter:image|(^|\s)image($|\s)|msapplication-tileimage/.test(key);
-      if (!isBrandImage) return [];
-
-      const url = absoluteIconUrl(meta.getAttribute('content'), baseUrl);
-      if (!url) return [];
-      return [{ kind: 'brand-image', url, score: 3600 + largestDeclaredIconSize('', url) }];
-    });
-
-  const logoCandidates = [...document.querySelectorAll('img[src]')]
-    .filter(img => {
-      const marker = `${img.getAttribute('alt') || ''} ${img.getAttribute('class') || ''} ${img.getAttribute('id') || ''} ${img.getAttribute('src') || ''}`.toLowerCase();
-      return /\blogo\b|brand|favicon|app-icon/.test(marker);
-    })
-    .slice(0, 6)
-    .flatMap(img => {
-      const url = absoluteIconUrl(img.getAttribute('src'), baseUrl);
-      if (!url) return [];
-      const declaredSize = Math.max(Number(img.getAttribute('width')) || 0, Number(img.getAttribute('height')) || 0);
-      return [{ kind: 'brand-logo', url, score: 3000 + Math.max(declaredSize, largestDeclaredIconSize('', url)) }];
-    });
-
-  return [...metaCandidates, ...logoCandidates];
-}
-
-async function declaredIconCandidatesFromManifest(manifestUrl) {
-  try {
-    const response = await fetch(manifestUrl, {
-      cache: 'force-cache',
-      credentials: 'omit',
-    });
-    if (!response.ok) return [];
-
-    const manifest = await response.json();
-    if (!Array.isArray(manifest.icons)) return [];
-
-    return manifest.icons.flatMap(icon => {
-      const url = absoluteIconUrl(icon.src, manifestUrl);
-      if (!url) return [];
-      return [{ kind: 'manifest-icon', url, score: 1500 + largestDeclaredIconSize(icon.sizes, url) }];
-    });
-  } catch {
-    return [];
-  }
-}
-
-function uniqueIconCandidates(candidates) {
-  const seen = new Set();
-  return candidates.filter(candidate => {
-    if (!candidate.url || seen.has(candidate.url)) return false;
-    seen.add(candidate.url);
-    return true;
-  });
-}
-
-function relValues(rel) {
-  return String(rel || '').toLowerCase().split(/\s+/).filter(Boolean);
-}
-
-function absoluteIconUrl(value, baseUrl) {
-  if (!value) return '';
-  try {
-    const url = new URL(value, baseUrl).toString();
-    return isFetchableIconUrl(url) ? url : '';
-  } catch {
-    return '';
-  }
-}
-
-function largestDeclaredIconSize(sizes, url = '') {
-  const declared = String(sizes || '')
-    .split(/\s+/)
-    .map(size => {
-      const match = size.match(/^(\d+)x(\d+)$/i);
-      return match ? Math.max(Number(match[1]), Number(match[2])) : 0;
-    });
-  const fromName = [...String(url).matchAll(/(?:^|[_-])(\d{2,4})x(\d{2,4})(?=[_.-])/gi)]
-    .map(match => Math.max(Number(match[1]), Number(match[2])));
-  const singleSizeFromName = [...String(url).matchAll(/(?:^|[_-])(\d{2,4})(?=[_.-])/gi)]
-    .map(match => Number(match[1]));
-  return Math.max(0, ...declared, ...fromName, ...singleSizeFromName);
-}
-
-function handleIconCandidateError(event) {
-  const img = event.target;
-  if (!(img instanceof HTMLImageElement)) return;
-
-  const button = img.closest('[data-action="select-icon"]');
-  if (!button || !els.iconCandidates.contains(button)) return;
-
-  if (pendingIconUrl === button.dataset.iconUrl) {
-    pendingIconUrl = '';
-    renderIconPreview();
+  if (item.icon?.type === 'blob') {
+    const blob = dialogIcon.blob || (await getBlobRecord(item.icon.hash).catch(() => null))?.blob;
+    if (blob) setIconDisplay(item.id, key, blob);
     return;
   }
-
-  button.remove();
-}
-
-function handleShortcutIconError(event) {
-  const img = event.target;
-  if (!(img instanceof HTMLImageElement) || !img.closest('.shortcut-icon')) return;
-
-  const fallbacks = parseIconFallbacks(img.dataset.fallbacks);
-  const index = Number.parseInt(img.dataset.fallbackIndex || '0', 10);
-  const next = fallbacks[index];
-  if (!next) return;
-
-  img.dataset.fallbackIndex = String(index + 1);
-  img.src = next;
-}
-
-function handleShortcutIconLoad(event) {
-  const img = event.target;
-  if (!(img instanceof HTMLImageElement) || !img.closest('.shortcut-icon')) return;
-  cacheDisplayedShortcutIcon(img);
-}
-
-async function cacheDisplayedShortcutIcon(img) {
-  const card = img.closest('.shortcut-card');
-  const id = card?.dataset.id || '';
-  const sourceUrl = img.currentSrc || img.getAttribute('src') || '';
-  if (!id || !isFetchableIconUrl(sourceUrl)) return;
-
-  const item = state.shortcuts.find(shortcut => shortcut.id === id);
-  if (!item) return;
-  if (item.iconId === id && activeIconUrls.has(id) && item.iconUrl === sourceUrl) return;
-
-  const cacheKey = `${id}:${sourceUrl}`;
-  if (iconCacheInFlight.has(cacheKey)) return;
-
-  iconCacheInFlight.add(cacheKey);
-  try {
-    const blob = await iconSourceToBlob(sourceUrl);
-    await saveIconRecord(id, blob, sourceUrl);
-    setActiveIconUrl(id, blob);
-
-    const target = state.shortcuts.find(shortcut => shortcut.id === id);
-    if (!target) return;
-    target.iconId = id;
-    target.iconUrl = isHttpUrl(sourceUrl) ? sourceUrl : '';
-    target.updatedAt = Date.now();
-    delete target.customIcon;
-    await saveState();
-  } catch {
-    // The browser may display an image that cannot be fetched by script; keep using the visible source.
-  } finally {
-    iconCacheInFlight.delete(cacheKey);
+  if (item.icon?.type === 'url') {
+    const choice = dialogChoices.find(entry => entry.url === item.icon.url);
+    if (choice) await storeIconResult(item.id, key, { ...choice, sourceUrl: choice.url });
+    return;
+  }
+  const shown = iconDisplay.get(item.id);
+  if (shown?.key === key) return;
+  dropIconDisplay(item.id);
+  // Automatic icon for a new or changed address: reuse the sharpest result the
+  // dialog already found, unless it is small (the background lookup also tries
+  // the mobile site in that case).
+  const automatic = dialogChoices.find(choice => !choice.source.startsWith('brand'));
+  if (automatic && dialogChoicesKey === urlKey(item.url) && (automatic.isSvg || Math.min(automatic.width, automatic.height) >= 64)) {
+    await storeIconResult(item.id, key, { ...automatic, sourceUrl: automatic.url });
   }
 }
 
-function parseIconFallbacks(value) {
-  try {
-    const parsed = JSON.parse(value || '[]');
-    return Array.isArray(parsed) ? parsed.filter(item => typeof item === 'string' && item) : [];
-  } catch {
-    return [];
+// ------------------------------------------------------------ dragging
+
+function handleDragStart(event) {
+  const card = event.target.closest('.shortcut-card');
+  if (!editMode || !card) {
+    event.preventDefault();
+    return;
   }
+  draggedId = card.dataset.id;
+  card.classList.add('dragging');
+  event.dataTransfer.effectAllowed = 'move';
+  event.dataTransfer.setData('text/plain', draggedId);
 }
 
-function imageFileToIconDataUrl(file, canvasSize) {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    const url = URL.createObjectURL(file);
-    img.onload = () => {
-      const canvas = document.createElement('canvas');
-      canvas.width = canvasSize;
-      canvas.height = canvasSize;
-      const ctx = canvas.getContext('2d');
-      ctx.clearRect(0, 0, canvasSize, canvasSize);
-
-      const scale = Math.min(canvasSize / img.width, canvasSize / img.height);
-      const width = Math.max(1, Math.round(img.width * scale));
-      const height = Math.max(1, Math.round(img.height * scale));
-      const x = Math.round((canvasSize - width) / 2);
-      const y = Math.round((canvasSize - height) / 2);
-      ctx.drawImage(img, x, y, width, height);
-
-      URL.revokeObjectURL(url);
-      resolve(canvas.toDataURL('image/png'));
-    };
-    img.onerror = () => {
-      URL.revokeObjectURL(url);
-      reject(new Error('Unable to load icon'));
-    };
-    img.src = url;
-  });
+function handleDragOver(event) {
+  if (!editMode || !draggedId) return;
+  const slot = event.target.closest('.shortcut-slot');
+  if (!slot) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = 'move';
+  setActiveDropSlot(slot);
 }
 
-async function deleteEditingShortcut() {
-  if (!editingId) return;
-  const idToDelete = editingId;
-  const previous = state.shortcuts.find(item => item.id === idToDelete);
-  closeShortcutDialog();
-  const card = activeShortcutPage()?.querySelector(`[data-id="${idToDelete}"]`);
-  card?.classList.add('removing');
-  await sleep(card ? 220 : 0);
-  state.shortcuts = state.shortcuts.filter(item => item.id !== idToDelete);
-  rememberDeletedShortcut(previous);
-  await deleteIconRecord(idToDelete);
-  await saveState();
-  showToast('已删除');
+async function handleDrop(event) {
+  if (!editMode || !draggedId) return;
+  const target = event.target.closest('.shortcut-slot');
+  if (!target) return;
+  event.preventDefault();
+  const moved = reorderShortcutToIndex(draggedId, Number(target.dataset.globalIndex));
+  draggedId = null;
+  setActiveDropSlot(null);
+  if (moved) await commitChange();
   render();
 }
+
+function handleDragEnd() {
+  draggedId = null;
+  setActiveDropSlot(null);
+  document.querySelectorAll('.shortcut-card.dragging').forEach(card => card.classList.remove('dragging'));
+}
+
+function setActiveDropSlot(slot) {
+  if (activeDropSlot === slot) return;
+  activeDropSlot?.classList.remove('drag-over');
+  activeDropSlot = slot;
+  activeDropSlot?.classList.add('drag-over');
+}
+
+// --------------------------------------------------------- page scroll
 
 async function goToPage(page) {
   const nextPage = clampPage(page);
@@ -1465,7 +1526,7 @@ async function goToPage(page) {
   state.settings.currentPage = nextPage;
   updateActivePageState();
   scrollToShortcutPage(nextPage, { smooth: true });
-  await saveState({ sync: false });
+  await persistState();
 }
 
 function scrollToShortcutPage(page, { smooth = false } = {}) {
@@ -1474,17 +1535,9 @@ function scrollToShortcutPage(page, { smooth = false } = {}) {
   pageScrollAnimation = 0;
   suppressScrollState = true;
 
-  if (!smooth) {
-    els.shortcutViewport.scrollLeft = left;
-    requestAnimationFrame(() => {
-      suppressScrollState = false;
-    });
-    return;
-  }
-
   const startLeft = els.shortcutViewport.scrollLeft;
   const distance = left - startLeft;
-  if (Math.abs(distance) <= 2) {
+  if (!smooth || Math.abs(distance) <= 2) {
     els.shortcutViewport.scrollLeft = left;
     requestAnimationFrame(() => {
       suppressScrollState = false;
@@ -1517,31 +1570,8 @@ function handleShortcutScroll() {
     if (nextPage === state.settings.currentPage) return;
     state.settings.currentPage = nextPage;
     updateActivePageState();
-    await saveState({ sync: false });
+    await persistState();
   }, 60);
-}
-
-function handleKeydown(event) {
-  if (event.key === 'Escape' && els.dialog.open) {
-    closeShortcutDialog();
-    return;
-  }
-  if (event.key === 'Escape' && els.syncDialog.open) {
-    closeSyncDialog();
-    return;
-  }
-  if (event.key === 'Escape' && editMode) {
-    exitEditMode();
-    return;
-  }
-  if (event.key === 'ArrowLeft' && !els.dialog.open) goToPage(state.settings.currentPage - 1);
-  if (event.key === 'ArrowRight' && !els.dialog.open) goToPage(state.settings.currentPage + 1);
-
-  const focusedCard = document.activeElement?.closest?.('.shortcut-card');
-  if (!editMode && focusedCard && (event.key === 'Enter' || event.key === ' ')) {
-    event.preventDefault();
-    window.location.href = focusedCard.dataset.url;
-  }
 }
 
 function handleShortcutWheel(event) {
@@ -1573,64 +1603,7 @@ function shouldIgnorePageGesture(event) {
     || Boolean(event.target.closest('.settings-menu, input, textarea, select'));
 }
 
-function handleDragStart(event) {
-  const card = event.target.closest('.shortcut-card');
-  if (!editMode || !card) {
-    event.preventDefault();
-    return;
-  }
-  draggedId = card.dataset.id;
-  card.classList.add('dragging');
-  event.dataTransfer.effectAllowed = 'move';
-  event.dataTransfer.setData('text/plain', draggedId);
-}
-
-function handleDragOver(event) {
-  if (!editMode || !draggedId) return;
-  const slot = event.target.closest('.shortcut-slot');
-  if (!slot) return;
-  event.preventDefault();
-  event.dataTransfer.dropEffect = 'move';
-  setActiveDropSlot(slot);
-}
-
-async function handleDrop(event) {
-  if (!editMode || !draggedId) return;
-  const target = event.target.closest('.shortcut-slot');
-  if (!target) return;
-  event.preventDefault();
-
-  reorderShortcutToIndex(draggedId, Number(target.dataset.globalIndex));
-  draggedId = null;
-  setActiveDropSlot(null);
-  await saveState();
-  render();
-}
-
-function handleDragEnd() {
-  draggedId = null;
-  setActiveDropSlot(null);
-  document.querySelectorAll('.shortcut-card.dragging').forEach(card => card.classList.remove('dragging'));
-}
-
-function setActiveDropSlot(slot) {
-  if (activeDropSlot === slot) return;
-  activeDropSlot?.classList.remove('drag-over');
-  activeDropSlot = slot;
-  activeDropSlot?.classList.add('drag-over');
-}
-
-function reorderShortcutToIndex(sourceId, targetIndex) {
-  const ordered = orderedShortcuts();
-  const from = ordered.findIndex(item => item.id === sourceId);
-  if (from === -1 || !Number.isFinite(targetIndex)) return;
-  const [moved] = ordered.splice(from, 1);
-  const insertionIndex = Math.max(0, Math.min(targetIndex, ordered.length));
-  ordered.splice(insertionIndex, 0, moved);
-  const now = Date.now();
-  state.shortcuts = ordered.map((item, index) => ({ ...item, order: index, updatedAt: now }));
-  movedShortcutId = sourceId;
-}
+// ------------------------------------------------------------ wallpaper
 
 async function handleWallpaperUpload(event) {
   const file = event.target.files?.[0];
@@ -1644,343 +1617,46 @@ async function handleWallpaperUpload(event) {
   try {
     showToast('正在处理壁纸');
     const blob = await compressImage(file, 4096, 0.94);
-    await saveWallpaperBlob(blob);
-    state.settings.wallpaper = { type: 'uploaded' };
-    await saveState({ sync: false });
+    if (blob.size > MAX_WALLPAPER_BYTES) {
+      showToast('壁纸超过 100 MB，无法同步');
+      return;
+    }
+    const hash = await iconKit.sha256Hex(await blob.arrayBuffer());
+    await saveBlobRecord(hash, blob, blob.type);
+    state.settings.wallpaper = wallpaperSetting({ hash, mime: blob.type, size: blob.size, updatedAt: nextStamp() });
+    await commitChange({ touchesShortcuts: false });
     await applyWallpaper();
-    showToast('壁纸已更新');
+    pruneLocalBlobs();
+    showToast(syncConfigured() ? '壁纸已更新，正在同步' : '壁纸已更新');
   } catch {
     showToast('壁纸处理失败');
   }
 }
 
-function cleanShortcutTitle(value) {
-  return String(value || '')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 80);
+async function resetWallpaper() {
+  state.settings.wallpaper = wallpaperSetting({ hash: '', updatedAt: nextStamp() });
+  await commitChange({ touchesShortcuts: false });
+  await applyWallpaper();
+  pruneLocalBlobs();
+  showToast('壁纸已重置');
 }
 
-function hostnameFromUrl(url) {
-  try {
-    return new URL(url).hostname.replace(/^www\./, '');
-  } catch {
-    return '';
-  }
-}
-
-function shortcutUrlKey(url) {
-  try {
-    const parsed = new URL(normalizeUrl(url));
-    parsed.hash = '';
-    if (parsed.pathname === '/') parsed.pathname = '';
-    return parsed.toString().replace(/\/$/, '').toLowerCase();
-  } catch {
-    return '';
-  }
-}
-
-function rememberDeletedShortcut(shortcut) {
-  if (!shortcut?.id) return;
-  state.deletedShortcuts = normalizeDeletedShortcuts([
-    ...(state.deletedShortcuts || []),
-    {
-      id: shortcut.id,
-      url: shortcut.url || '',
-      deletedAt: Date.now(),
-    },
-  ]);
-}
-
-function iconCandidateCacheKey(url) {
-  try {
-    const parsed = new URL(normalizeUrl(url));
-    parsed.hash = '';
-    return parsed.toString();
-  } catch {
-    return '';
-  }
-}
-
-function normalizeSyncEndpoint(value) {
-  const endpoint = String(value || '').trim().replace(/\/+$/, '');
-  if (!endpoint) return '';
-  try {
-    const url = new URL(endpoint);
-    return ['http:', 'https:'].includes(url.protocol) ? url.toString().replace(/\/+$/, '') : '';
-  } catch {
-    return '';
-  }
-}
-
-function shouldSync(reason) {
-  const sync = state.sync || {};
-  if (!sync.enabled || !sync.endpoint || !sync.token) return false;
-  if (reason !== 'startup') return true;
-  if (sync.pending) return true;
-  return Date.now() - (sync.lastSyncAt || 0) > SYNC_STARTUP_MIN_INTERVAL_MS;
-}
-
-function scheduleSync(reason) {
-  if (!shouldSync(reason)) return;
-  clearTimeout(syncTimer);
-  syncTimer = setTimeout(() => {
-    syncStateNow({ force: reason === 'manual' }).catch(() => {});
-  }, reason === 'startup' ? 1200 : SYNC_DEBOUNCE_MS);
-}
-
-async function syncStateNow({ force = false } = {}) {
-  if (syncInFlight || !shouldSync(force ? 'manual' : 'save')) return;
-  syncInFlight = true;
-
-  try {
-    const sync = state.sync;
-    const remote = await syncRequest('GET', sync.endpoint, sync.token);
-    const beforePayload = exportSyncPayload(state);
-    const mergeChanged = await applyRemoteSyncPayload(remote);
-    if (mergeChanged) {
-      state.settings.currentPage = clampPage(state.settings.currentPage);
-      await persistState(state);
-      await hydrateShortcutIcons();
-      render();
-    }
-
-    const nextPayload = exportSyncPayload(state);
-    if (sync.pending || !sameSyncPayload(beforePayload, remote) || !sameSyncPayload(nextPayload, remote)) {
-      await syncRequest('PUT', sync.endpoint, sync.token, nextPayload);
-    }
-
-    state.sync = {
-      ...state.sync,
-      pending: false,
-      lastError: '',
-      lastSyncAt: Date.now(),
-    };
-    await persistState(state);
-    if (force) showToast('同步完成');
-  } catch (error) {
-    state.sync = {
-      ...(state.sync || {}),
-      pending: true,
-      lastError: friendlySyncError(error),
-    };
-    await persistState(state);
-    if (force) showToast('同步失败');
-  } finally {
-    syncInFlight = false;
-  }
-}
-
-async function syncRequest(method, endpoint, token, body = null) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), SYNC_REQUEST_TIMEOUT_MS);
-  try {
-    const response = await fetch(`${endpoint}/api/state`, {
-      method,
-      cache: 'no-store',
-      credentials: 'omit',
-      signal: controller.signal,
-      headers: {
-        Authorization: `Bearer ${token}`,
-        ...(body ? { 'Content-Type': 'application/json' } : {}),
-      },
-      body: body ? JSON.stringify(body) : null,
-    });
-
-    if (response.status === 401 || response.status === 403) throw new Error('token');
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    return method === 'GET' ? await response.json() : null;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-function exportSyncPayload(sourceState) {
-  return {
-    schemaVersion: SYNC_SCHEMA_VERSION,
-    updatedAt: Date.now(),
-    shortcuts: orderedShortcutsFrom(sourceState.shortcuts).map(item => ({
-      id: item.id,
-      title: item.title,
-      url: item.url,
-      size: ['small', 'medium', 'large'].includes(item.size) ? item.size : 'small',
-      iconUrl: isHttpUrl(item.iconUrl) ? item.iconUrl : '',
-      order: Number.isFinite(item.order) ? item.order : 0,
-      updatedAt: Number.isFinite(item.updatedAt) ? item.updatedAt : DEFAULT_SHORTCUT_UPDATED_AT,
-    })),
-    deletedShortcuts: normalizeDeletedShortcuts(sourceState.deletedShortcuts),
-    settings: {
-      iconDensity: ['small', 'medium', 'large'].includes(sourceState.settings?.iconDensity)
-        ? sourceState.settings.iconDensity
-        : 'small',
-    },
-  };
-}
-
-async function applyRemoteSyncPayload(payload) {
-  if (!payload || payload.schemaVersion !== SYNC_SCHEMA_VERSION || !Array.isArray(payload.shortcuts)) {
-    return false;
+async function applyWallpaper() {
+  if (activeWallpaperUrl) {
+    URL.revokeObjectURL(activeWallpaperUrl);
+    activeWallpaperUrl = null;
   }
 
-  let changed = false;
-  const localById = new Map(state.shortcuts.map(item => [item.id, item]));
-  const localByUrl = new Map(state.shortcuts.map(item => [shortcutUrlKey(item.url), item]).filter(([, item]) => item));
-  const nextShortcuts = [...state.shortcuts];
-  const remoteDeleted = normalizeDeletedShortcuts(payload.deletedShortcuts);
-
-  for (const deleted of remoteDeleted) {
-    const index = nextShortcuts.findIndex(item => (
-      item.id === deleted.id || (deleted.url && shortcutUrlKey(item.url) === shortcutUrlKey(deleted.url))
-    ));
-    if (index === -1) continue;
-    if (deleted.deletedAt >= (nextShortcuts[index].updatedAt || 0)) {
-      await deleteIconRecord(nextShortcuts[index].id);
-      nextShortcuts.splice(index, 1);
-      changed = true;
-    }
+  const blob = state.settings.wallpaper.hash ? await localBlob(state.settings.wallpaper.hash) : null;
+  if (!blob) {
+    els.body.classList.remove('has-wallpaper');
+    els.body.style.removeProperty('--wallpaper-url');
+    return;
   }
 
-  for (const remote of payload.shortcuts) {
-    const remoteItem = normalizeSyncShortcut(remote);
-    if (!remoteItem || isShortcutDeleted(remoteItem, remoteDeleted)) continue;
-    const local = localById.get(remoteItem.id) || localByUrl.get(shortcutUrlKey(remoteItem.url));
-    const tombstone = [...remoteDeleted, ...(state.deletedShortcuts || [])].find(deleted => (
-      deleted.id === remoteItem.id || (deleted.url && shortcutUrlKey(deleted.url) === shortcutUrlKey(remoteItem.url))
-    ));
-    if (tombstone && tombstone.deletedAt >= remoteItem.updatedAt) continue;
-
-    if (!local) {
-      nextShortcuts.push(remoteItem);
-      changed = true;
-      continue;
-    }
-
-    if (remoteItem.updatedAt >= (local.updatedAt || 0)) {
-      const index = nextShortcuts.findIndex(item => item.id === local.id);
-      const merged = mergeRemoteShortcut(remoteItem, local);
-      if (index !== -1 && JSON.stringify(nextShortcuts[index]) !== JSON.stringify(merged)) {
-        if (local.id !== merged.id) await deleteIconRecord(local.id);
-        nextShortcuts[index] = merged;
-        changed = true;
-      }
-    }
-  }
-
-  const mergedDeleted = mergeDeletedShortcuts(state.deletedShortcuts, remoteDeleted);
-  if (JSON.stringify(mergedDeleted) !== JSON.stringify(state.deletedShortcuts || [])) {
-    state.deletedShortcuts = mergedDeleted;
-    changed = true;
-  }
-
-  const remoteDensity = payload.settings?.iconDensity;
-  if (['small', 'medium', 'large'].includes(remoteDensity) && state.settings.iconDensity !== remoteDensity) {
-    state.settings.iconDensity = remoteDensity;
-    changed = true;
-  }
-
-  if (changed) {
-    state.shortcuts = orderedShortcutsFrom(nextShortcuts)
-      .filter(item => !isShortcutDeleted(item, state.deletedShortcuts))
-      .map((item, index) => ({ ...item, order: index }));
-  }
-
-  return changed;
-}
-
-function normalizeSyncShortcut(item) {
-  if (!item || typeof item.id !== 'string' || !item.id || !item.title || !item.url) return null;
-  return normalizeShortcutForSave({
-    id: item.id,
-    title: String(item.title).slice(0, 80),
-    url: normalizeUrl(String(item.url)),
-    size: ['small', 'medium', 'large'].includes(item.size) ? item.size : 'small',
-    iconUrl: isHttpUrl(item.iconUrl) ? item.iconUrl : '',
-    order: Number.isFinite(item.order) ? item.order : 0,
-    updatedAt: Number.isFinite(item.updatedAt) ? item.updatedAt : DEFAULT_SHORTCUT_UPDATED_AT,
-  });
-}
-
-function mergeRemoteShortcut(remote, local) {
-  const sameIconSource = !remote.iconUrl || remote.iconUrl === local.iconUrl;
-  return normalizeShortcutForSave({
-    ...remote,
-    iconId: sameIconSource ? local.iconId : '',
-    iconUrl: remote.iconUrl || local.iconUrl || '',
-  });
-}
-
-function mergeDeletedShortcuts(localDeleted = [], remoteDeleted = []) {
-  const byId = new Map();
-  for (const item of normalizeDeletedShortcuts([...localDeleted, ...remoteDeleted])) {
-    const key = item.id;
-    const previous = byId.get(key);
-    if (!previous || item.deletedAt > previous.deletedAt) byId.set(key, item);
-  }
-  return [...byId.values()].sort((a, b) => b.deletedAt - a.deletedAt).slice(0, 300);
-}
-
-function orderedShortcutsFrom(shortcuts) {
-  return [...(shortcuts || [])].sort((a, b) => (a.order || 0) - (b.order || 0));
-}
-
-function sameSyncPayload(left, right) {
-  if (!right || right.schemaVersion !== SYNC_SCHEMA_VERSION) return false;
-  const comparable = payload => JSON.stringify({
-    schemaVersion: payload.schemaVersion,
-    shortcuts: orderedShortcutsFrom(payload.shortcuts).map(item => ({
-      id: item.id,
-      title: item.title,
-      url: item.url,
-      size: item.size,
-      iconUrl: item.iconUrl || '',
-      order: item.order || 0,
-      updatedAt: item.updatedAt || DEFAULT_SHORTCUT_UPDATED_AT,
-    })),
-    deletedShortcuts: normalizeDeletedShortcuts(payload.deletedShortcuts),
-    settings: {
-      iconDensity: payload.settings?.iconDensity || 'small',
-    },
-  });
-  return comparable(left) === comparable(right);
-}
-
-function friendlySyncError(error) {
-  if (error?.name === 'AbortError') return '服务器响应超时';
-  if (error?.message === 'token') return '令牌不正确';
-  return String(error?.message || '网络不可用').slice(0, 120);
-}
-
-function isImageDataUrl(value) {
-  return typeof value === 'string'
-    && (/^data:image\/[a-z0-9.+-]+;base64,/i.test(value) || /^data:image\/svg\+xml,/i.test(value));
-}
-
-function isFetchableIconUrl(value) {
-  if (typeof value !== 'string') return false;
-  try {
-    const parsed = new URL(value);
-    return ['http:', 'https:', 'chrome-extension:'].includes(parsed.protocol);
-  } catch {
-    return false;
-  }
-}
-
-function isHttpUrl(value) {
-  if (typeof value !== 'string') return false;
-  try {
-    const parsed = new URL(value);
-    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
-  } catch {
-    return false;
-  }
-}
-
-function escapeSvg(value) {
-  return String(value).replace(/[&<>]/g, char => ({
-    '&': '&amp;',
-    '<': '&lt;',
-    '>': '&gt;',
-  }[char]));
+  activeWallpaperUrl = URL.createObjectURL(blob);
+  els.body.style.setProperty('--wallpaper-url', `url("${activeWallpaperUrl}")`);
+  els.body.classList.add('has-wallpaper');
 }
 
 function compressImage(file, maxSide, quality) {
@@ -2010,39 +1686,647 @@ function compressImage(file, maxSide, quality) {
   });
 }
 
-async function applyWallpaper() {
-  if (activeWallpaperUrl) {
-    URL.revokeObjectURL(activeWallpaperUrl);
-    activeWallpaperUrl = null;
-  }
+// ----------------------------------------------------------------- sync
 
-  if (state.settings.wallpaper.type !== 'uploaded') {
-    els.body.classList.remove('has-wallpaper');
-    els.body.style.removeProperty('--wallpaper-url');
-    return;
-  }
+class SyncError extends Error {}
 
-  const blob = await getWallpaperBlob();
-  if (!blob) {
-    state.settings.wallpaper = { type: 'none' };
-    await saveState({ sync: false });
-    els.body.classList.remove('has-wallpaper');
-    els.body.style.removeProperty('--wallpaper-url');
-    return;
-  }
-
-  activeWallpaperUrl = URL.createObjectURL(blob);
-  els.body.style.setProperty('--wallpaper-url', `url("${activeWallpaperUrl}")`);
-  els.body.classList.add('has-wallpaper');
+function syncConfigured() {
+  const sync = state.sync;
+  return Boolean(sync.enabled && sync.endpoint && sync.password);
 }
 
-async function resetWallpaper() {
-  await deleteWallpaperBlob();
-  state.settings.wallpaper = { type: 'none' };
-  await saveState({ sync: false });
-  await applyWallpaper();
-  showToast('壁纸已重置');
+function normalizeSyncEndpoint(value) {
+  const endpoint = String(value || '').trim().replace(/\/+$/, '');
+  if (!endpoint) return '';
+  try {
+    const url = new URL(/^https?:\/\//i.test(endpoint) ? endpoint : `https://${endpoint}`);
+    return ['http:', 'https:'].includes(url.protocol) ? url.toString().replace(/\/+$/, '') : '';
+  } catch {
+    return '';
+  }
 }
+
+function scheduleSync(reason) {
+  if (!syncConfigured()) return;
+  clearTimeout(syncTimer);
+  const delay = { startup: 600, busy: 3000 }[reason] ?? SYNC_DEBOUNCE_MS;
+  syncTimer = setTimeout(async () => {
+    const result = await runSync({ reason: reason === 'busy' ? 'change' : reason }).catch(() => null);
+    // Another sync (in this tab or another one) was still running, for example
+    // downloading a wallpaper: try again so this change is not left behind.
+    if (result?.status === 'busy') scheduleSync('busy');
+  }, delay);
+}
+
+async function runSync({ reason = 'manual', interactive = false, choice = null } = {}) {
+  if (!syncConfigured()) return { status: 'disabled' };
+  const recentlyChecked = Date.now() - (state.sync.lastCheckAt || 0) < SYNC_MIN_CHECK_INTERVAL_MS;
+  if (!interactive && reason !== 'change' && !state.sync.dirty && recentlyChecked && !pendingChoice) return { status: 'skipped' };
+  if (pendingChoice && !choice && !interactive) return { status: 'needs-choice' };
+  return await withSyncLock(() => syncOnce({ interactive, choice }), { wait: interactive });
+}
+
+async function withSyncLock(task, { wait = false } = {}) {
+  // A sync started from the dialog waits for a running one, then runs with
+  // the settings just saved.
+  while (currentSync) {
+    if (!wait) return { status: 'busy' };
+    await currentSync.catch(() => {});
+  }
+  const run = async () => {
+    syncRunning = true;
+    renderSyncStatus();
+    try {
+      return await task();
+    } finally {
+      syncRunning = false;
+      syncProgress = '';
+      renderSyncStatus();
+    }
+  };
+  const locked = async () => {
+    // One sync at a time across all open new tabs.
+    if (navigator.locks?.request) {
+      try {
+        return await navigator.locks.request('tomorin-sync', wait ? {} : { ifAvailable: true }, lock => (lock ? run() : { status: 'busy' }));
+      } catch (error) {
+        if (error?.name !== 'SecurityError') throw error;
+      }
+    }
+    return await run();
+  };
+  currentSync = locked();
+  try {
+    return await currentSync;
+  } finally {
+    currentSync = null;
+  }
+}
+
+async function syncOnce({ interactive = false, choice = null } = {}) {
+  // Every request of this run goes to the server it started with; if the
+  // settings change meanwhile, the run stops and a new one starts.
+  const target = { endpoint: state.sync.endpoint, password: state.sync.password };
+  const endpoint = target.endpoint;
+  const stale = () => state.sync.endpoint !== target.endpoint || state.sync.password !== target.password;
+  // Taken once when "use cloud" is decided and kept across conflict retries,
+  // so edits made during the first attempt are not mistaken for old data.
+  let snapshot = null;
+  try {
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const firstSync = state.sync.linked !== endpoint;
+      const knownRev = firstSync ? 0 : state.sync.rev;
+      const remote = await fetchRemoteState(knownRev, target);
+      if (stale()) return { status: 'stale' };
+      // Edits made from now on must be newer than anything in the cloud copy.
+      if (!remote.notModified) state.clock = Math.max(state.clock || 0, core.maxTimestamp(remote.doc));
+      const localDoc = docFromState();
+
+      if (remote.notModified && !state.sync.dirty) {
+        const now = Date.now();
+        state.sync = { ...state.sync, lastSyncAt: now, lastCheckAt: now, lastError: '' };
+        await persistState();
+        renderSyncAlert();
+        await downloadMissingBlobs(docFromState(), target);
+        return { status: 'ok' };
+      }
+
+      let result;
+      let replace = false;
+      const baseRev = remote.notModified ? knownRev : remote.rev;
+      if (remote.notModified) {
+        result = localDoc;
+      } else if (firstSync) {
+        const decision = choice || automaticFirstSyncChoice(localDoc, remote.doc);
+        if (!decision) {
+          pendingChoice = { summary: core.summarizeDifference(localDoc, remote.doc) };
+          state.sync.lastCheckAt = Date.now();
+          await persistState();
+          announceSyncChoice(interactive);
+          return { status: 'needs-choice' };
+        }
+        if (decision === 'cloud') {
+          if (!snapshot) {
+            snapshot = localDoc;
+            if (core.hasContent(localDoc) && !state.pristine) await saveBackup(localDoc, '使用云端数据前');
+          }
+          result = core.adoptRemote(snapshot, remote.doc);
+          replace = true;
+        } else if (decision === 'local') {
+          result = core.overrideRemote(localDoc, remote.doc, nextStamp());
+        } else {
+          result = core.mergeDocs(localDoc, remote.doc);
+        }
+      } else {
+        result = core.mergeDocs(localDoc, remote.doc);
+      }
+
+      let rev = baseRev;
+      if (remote.notModified || !core.sameDoc(result, remote.doc)) {
+        if (stale()) return { status: 'stale' };
+        const put = await putRemoteState(result, baseRev, target);
+        if (put.conflict) continue;
+        rev = put.rev;
+      }
+      if (stale()) return { status: 'stale' };
+
+      if (!(await finishSync({ doc: result, rev, endpoint, replace, snapshot, stale }))) return { status: 'stale' };
+      pendingChoice = null;
+      // Use the state after merging: a wallpaper set during the request wins.
+      await downloadMissingBlobs(docFromState(), target);
+      return { status: 'ok' };
+    }
+    throw new SyncError('conflict');
+  } catch (error) {
+    state.sync.lastError = friendlySyncError(error);
+    state.sync.lastCheckAt = Date.now();
+    await persistState();
+    renderSyncAlert();
+    return { status: 'error', error };
+  }
+}
+
+function automaticFirstSyncChoice(localDoc, remoteDoc) {
+  if (!core.hasContent(remoteDoc)) return 'merge';
+  if (state.pristine) return 'cloud';
+  const signature = doc => doc.shortcuts.map(item => `${urlKey(item.url)}\u0001${item.title}\u0001${item.size}`).join('\u0002');
+  return signature(localDoc) === signature(remoteDoc) ? 'merge' : null;
+}
+
+// Apply a synced document locally. Edits made while the request was in flight
+// are merged in and synced on the next round.
+async function finishSync({ doc, rev, endpoint, replace, snapshot = null, stale = () => false }) {
+  if (!replace) {
+    const current = docFromState();
+    const preview = core.mergeDocs(current, doc);
+    const remaining = new Set(preview.shortcuts.map(item => urlKey(item.url)));
+    const removed = current.shortcuts.filter(item => !remaining.has(urlKey(item.url)));
+    if (removed.length >= BACKUP_DELETE_THRESHOLD) await saveBackup(current, '同步删除多个网站前');
+    if (stale()) return false;
+  }
+
+  // Merge and save without awaiting in between, so edits from other tabs that
+  // arrived during the request are part of what gets saved.
+  const before = docFromState();
+  // "Use cloud" drops the old local copy, but not edits made since the choice
+  // (for example in another tab while a wallpaper was uploading).
+  const merged = replace
+    ? core.mergeDocs(doc, snapshot ? core.changesSince(snapshot, before) : {})
+    : core.mergeDocs(before, doc);
+  const dirty = !core.sameDoc(merged, doc);
+  const changed = !core.sameDoc(before, merged);
+  const wallpaperBefore = state.settings.wallpaper.hash;
+  state = stateWithDoc(state, merged);
+  if (replace) {
+    state.pristine = false;
+    state.generation = (state.generation || 0) + 1;
+    state.replaced = { generation: state.generation, snapshot: snapshot ? core.normalizeDoc(snapshot) : null };
+  }
+  const now = Date.now();
+  state.sync = { ...state.sync, rev, linked: endpoint, dirty, lastSyncAt: now, lastCheckAt: now, lastError: '' };
+  await persistState();
+  if (changed) {
+    await hydrateShortcutIcons();
+    render();
+    queueStaleIcons();
+  } else {
+    renderSyncAlert();
+  }
+  if (wallpaperBefore !== state.settings.wallpaper.hash) await applyWallpaper();
+  if (dirty) scheduleSync('change');
+  return true;
+}
+
+async function syncFetch(target, pathname, { method = 'GET', headers = {}, body = null, timeout = SYNC_REQUEST_TIMEOUT_MS } = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeout);
+  try {
+    return await fetch(`${target.endpoint}${pathname}`, {
+      method,
+      body,
+      cache: 'no-store',
+      credentials: 'omit',
+      signal: controller.signal,
+      headers: { Authorization: `Bearer ${encodeURIComponent(target.password)}`, ...headers },
+    });
+  } catch (error) {
+    throw new SyncError(error?.name === 'AbortError' ? 'timeout' : 'network');
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function responseError(response) {
+  if (response.status === 401 || response.status === 403) return new SyncError('auth');
+  if (response.status === 429) return new SyncError('rate-limited');
+  if (response.status === 404 || response.status === 410) return new SyncError('server-outdated');
+  if (response.status === 413) return new SyncError('too-large');
+  return new SyncError(`HTTP ${response.status}`);
+}
+
+async function fetchRemoteState(knownRev, target) {
+  const response = await syncFetch(target, '/api/v2/state', {
+    headers: knownRev > 0 ? { 'If-None-Match': `"${knownRev}"` } : {},
+  });
+  if (response.status === 304) return { notModified: true };
+  if (!response.ok) throw responseError(response);
+  const payload = await response.json().catch(() => null);
+  if (!payload || !Number.isInteger(payload.rev)) throw new SyncError('server-outdated');
+  return { rev: payload.rev, doc: core.normalizeDoc(payload.state) };
+}
+
+async function putRemoteState(doc, rev, target) {
+  for (let round = 0; round < 4; round += 1) {
+    const response = await syncFetch(target, '/api/v2/state', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'If-Match': `"${rev}"` },
+      body: JSON.stringify(doc),
+    });
+    if (response.ok) return { rev: (await response.json()).rev };
+    if (response.status === 412) return { conflict: true };
+    if (response.status === 409) {
+      const payload = await response.json().catch(() => ({}));
+      await uploadBlobs(Array.isArray(payload.missing) ? payload.missing : [], doc, target);
+      continue;
+    }
+    throw responseError(response);
+  }
+  throw new SyncError('blob-upload');
+}
+
+async function uploadBlobs(hashes, doc, target) {
+  const refs = new Map(core.blobRefs(doc).map(ref => [ref.hash, ref]));
+  for (const hash of hashes) {
+    const ref = refs.get(hash);
+    const blob = await localBlob(hash);
+    if (!blob) throw new SyncError('blob-missing');
+    syncProgress = ref?.kind === 'wallpaper' ? `正在上传壁纸（${formatBytes(blob.size)}）…` : '正在上传图标…';
+    renderSyncStatus();
+    const response = await syncFetch(target, `/api/v2/blobs/${hash}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': blob.type || ref?.mime || 'image/png' },
+      body: blob,
+      timeout: SYNC_BLOB_TIMEOUT_MS,
+    });
+    if (!response.ok) throw responseError(response);
+  }
+  syncProgress = '';
+}
+
+// Wallpapers and uploaded icons are stored by their hash, so a download can
+// never overwrite a picture chosen meanwhile.
+async function localBlob(hash) {
+  const record = await getBlobRecord(hash).catch(() => null);
+  if (record?.blob) return record.blob;
+  // A wallpaper saved before pictures were stored by hash sits under one fixed
+  // key; move it over if it is the one asked for.
+  const legacy = await getLegacyWallpaper().catch(() => null);
+  if (legacy && await iconKit.sha256Hex(await legacy.arrayBuffer()) === hash) {
+    await saveBlobRecord(hash, legacy, legacy.type || 'image/jpeg');
+    await deleteLegacyWallpaper().catch(() => {});
+    return legacy;
+  }
+  return null;
+}
+
+// Forget pictures nothing refers to any more. Recent ones are kept: a picture
+// may be saved a moment before the shortcut or wallpaper that uses it.
+async function pruneLocalBlobs() {
+  const backup = await readBackup();
+  const records = await storeRequest(BLOB_STORE, 'readonly', store => store.getAll()).catch(() => []);
+  const now = Date.now();
+  for (const record of records || []) {
+    if (now - (record.savedAt || 0) <= BLOB_PRUNE_AGE_MS) continue;
+    // Checked against the state at this moment: it may have changed meanwhile.
+    const used = new Set([
+      ...core.blobRefs(docFromState()).map(ref => ref.hash),
+      ...(backup ? core.blobRefs(backup.doc).map(ref => ref.hash) : []),
+    ]);
+    if (used.has(record.hash)) continue;
+    await storeRequest(BLOB_STORE, 'readwrite', store => store.delete(record.hash)).catch(() => {});
+  }
+}
+
+async function fetchBlob(hash, mime, target) {
+  const response = await syncFetch(target, `/api/v2/blobs/${hash}`, { timeout: SYNC_BLOB_TIMEOUT_MS });
+  if (response.status === 404) throw new SyncError('blob-missing');
+  if (!response.ok) throw responseError(response);
+  const buffer = await response.arrayBuffer();
+  if (await iconKit.sha256Hex(buffer) !== hash) throw new SyncError('blob-corrupt');
+  return new Blob([buffer], { type: mime || response.headers.get('content-type') || 'application/octet-stream' });
+}
+
+async function downloadMissingBlobs(doc, target) {
+  try {
+    if (doc.wallpaper.hash && !(await getBlobRecord(doc.wallpaper.hash).catch(() => null))) {
+      syncProgress = '正在下载壁纸…';
+      renderSyncStatus();
+      const blob = await fetchBlob(doc.wallpaper.hash, doc.wallpaper.mime, target);
+      await saveBlobRecord(doc.wallpaper.hash, blob, doc.wallpaper.mime);
+      if (state.settings.wallpaper.hash === doc.wallpaper.hash) await applyWallpaper();
+    }
+
+    let iconsChanged = false;
+    for (const ref of core.blobRefs(doc).filter(entry => entry.kind === 'icon')) {
+      if (await getBlobRecord(ref.hash).catch(() => null)) continue;
+      syncProgress = '正在下载图标…';
+      renderSyncStatus();
+      const blob = await fetchBlob(ref.hash, ref.mime, target);
+      await saveBlobRecord(ref.hash, blob, ref.mime);
+      iconsChanged = true;
+    }
+    if (iconsChanged) {
+      await hydrateShortcutIcons();
+      state.shortcuts.forEach(item => refreshIconElements(item.id));
+    }
+    pruneLocalBlobs();
+  } catch (error) {
+    state.sync.lastError = friendlySyncError(error);
+    await persistState();
+  } finally {
+    syncProgress = '';
+  }
+}
+
+function friendlySyncError(error) {
+  const code = error?.message || '';
+  return {
+    auth: '同步密码不正确',
+    'rate-limited': '密码错误次数太多，请 15 分钟后再试',
+    'server-outdated': '同步服务器需要更新到新版本',
+    network: '连不上同步服务器',
+    timeout: '同步服务器响应超时',
+    'too-large': '文件太大，服务器拒绝了上传（检查 Nginx 的 client_max_body_size）',
+    'blob-missing': '云端缺少一张图片，请在原电脑上重新同步',
+    'blob-corrupt': '下载的图片已损坏',
+    conflict: '多台设备同时在同步，请稍后再试',
+  }[code] || String(code || '网络不可用').slice(0, 120);
+}
+
+async function saveBackup(doc, reason) {
+  const backup = { savedAt: Date.now(), reason, count: doc.shortcuts.length, doc };
+  if (hasChromeStorage) await chrome.storage.local.set({ [BACKUP_KEY]: backup });
+  else localStorage.setItem(BACKUP_KEY, JSON.stringify(backup));
+}
+
+async function readBackup() {
+  try {
+    const backup = hasChromeStorage
+      ? (await chrome.storage.local.get(BACKUP_KEY))[BACKUP_KEY]
+      : JSON.parse(localStorage.getItem(BACKUP_KEY) || 'null');
+    return backup?.doc ? backup : null;
+  } catch {
+    return null;
+  }
+}
+
+async function clearBackup() {
+  if (hasChromeStorage) await chrome.storage.local.remove(BACKUP_KEY);
+  else localStorage.removeItem(BACKUP_KEY);
+}
+
+// Sites in the backup that are missing now. Restoring only adds them back and
+// never removes anything, so it is safe on any computer.
+function missingFromBackup(backup) {
+  const ids = new Set(state.shortcuts.map(item => item.id));
+  const keys = new Set(state.shortcuts.map(item => urlKey(item.url)));
+  // Ids folded into another shortcut (same website) are not missing.
+  const folded = new Set(state.tombstones.filter(tomb => tomb.to).map(tomb => tomb.id));
+  return core.normalizeDoc(backup.doc).shortcuts
+    .filter(item => !ids.has(item.id) && !folded.has(item.id) && !keys.has(urlKey(item.url)));
+}
+
+async function restoreBackup(button) {
+  const backup = await readBackup();
+  if (!backup) return;
+  const missing = missingFromBackup(backup);
+  if (!missing.length) {
+    await clearBackup();
+    renderBackupButton();
+    showToast('没有需要恢复的网站');
+    return;
+  }
+  if (button.dataset.confirming !== 'true') {
+    button.dataset.confirming = 'true';
+    button.textContent = `再点一次，加回 ${missing.length} 个网站`;
+    setTimeout(() => {
+      if (button.isConnected && button.dataset.confirming === 'true') renderBackupButton();
+    }, 5000);
+    return;
+  }
+  const stamp = nextStamp();
+  const revived = new Set(missing.map(item => item.id));
+  state.tombstones = state.tombstones.filter(tomb => tomb.to || !revived.has(tomb.id));
+  state.shortcuts.push(...missing.map(item => ({ ...item, editedAt: stamp, movedAt: stamp })));
+  await commitChange();
+  await clearBackup();
+  await hydrateShortcutIcons();
+  render();
+  queueStaleIcons();
+  renderBackupButton();
+  showToast(`已加回 ${missing.length} 个网站`);
+}
+
+// ------------------------------------------------------------ sync dialog
+
+function openSyncDialog() {
+  const sync = state.sync;
+  els.syncEnabled.checked = Boolean(sync.enabled);
+  els.syncEndpoint.value = sync.endpoint || '';
+  els.syncPassword.value = sync.password || '';
+  resetSyncPasswordVisibility();
+  if (pendingChoice) showSyncChoice();
+  else showSyncMain();
+  renderSyncStatus();
+  renderBackupButton();
+  els.syncDialog.showModal();
+  if (!pendingChoice) requestAnimationFrame(() => (sync.endpoint ? els.syncPassword : els.syncEndpoint).focus());
+}
+
+function closeSyncDialog() {
+  resetSyncPasswordVisibility();
+  if (els.syncDialog.open) els.syncDialog.close();
+}
+
+function showSyncMain() {
+  els.syncMain.hidden = false;
+  els.syncChoice.hidden = true;
+}
+
+function showSyncChoice() {
+  if (!pendingChoice) return;
+  const { summary } = pendingChoice;
+  els.syncChoiceSummary.textContent = `云端有 ${summary.remoteCount} 个网站，本机有 ${summary.localCount} 个，其中 ${summary.common} 个相同。第一次同步，请选一下怎么处理：`;
+  document.getElementById('choiceCloudDetail').textContent = summary.localOnly
+    ? `本机改成和云端一样；只在本机的 ${summary.localOnly} 个会被移除（可以恢复）。适合新电脑或不常用的电脑。`
+    : '本机改成和云端一样。适合新电脑或不常用的电脑。';
+  document.getElementById('choiceMergeDetail').textContent = `两边的网站都保留，共 ${summary.mergedCount} 个，同一网址只留一个。`;
+  document.getElementById('choiceLocalDetail').textContent = summary.remoteOnly
+    ? `云端和其他电脑都改成本机这 ${summary.localCount} 个；只在云端的 ${summary.remoteOnly} 个会被移除。适合主力电脑。`
+    : `云端和其他电脑都改成本机这 ${summary.localCount} 个。适合主力电脑。`;
+  const preferred = summary.localOnly === 0 ? 'cloud' : 'merge';
+  els.syncForm.querySelectorAll('input[name="syncChoice"]').forEach(input => {
+    input.checked = input.value === preferred;
+  });
+  els.syncMain.hidden = true;
+  els.syncChoice.hidden = false;
+}
+
+function announceSyncChoice(interactive) {
+  renderSyncAlert();
+  if (els.syncDialog.open) {
+    showSyncChoice();
+    renderSyncStatus();
+  } else if (!interactive) {
+    showToast('同步需要你确认一次', { label: '去处理', run: () => openSyncDialog() });
+  }
+}
+
+async function confirmSyncChoice() {
+  const choice = els.syncForm.querySelector('input[name="syncChoice"]:checked')?.value;
+  if (!choice) return;
+  pendingChoice = null;
+  showSyncMain();
+  const result = await runSync({ interactive: true, choice });
+  renderSyncStatus();
+  if (result.status === 'ok') {
+    showToast({ cloud: '已改成云端数据', merge: '已合并两边的收藏', local: '已用本机数据覆盖云端' }[choice]);
+    closeSyncDialog();
+  }
+}
+
+function syncFieldsFromDialog() {
+  const endpoint = normalizeSyncEndpoint(els.syncEndpoint.value);
+  const password = els.syncPassword.value;
+  const enabled = Boolean(els.syncEnabled.checked);
+  const serverChanged = endpoint !== state.sync.endpoint;
+  state.sync = {
+    ...state.sync,
+    enabled,
+    endpoint,
+    password,
+    lastError: '',
+    ...(serverChanged ? { rev: 0, linked: '', dirty: true, lastSyncAt: 0 } : {}),
+  };
+  if (serverChanged) pendingChoice = null;
+  return { enabled, endpoint, password };
+}
+
+async function handleSyncSubmit(event) {
+  event.preventDefault();
+  const { enabled, endpoint, password } = syncFieldsFromDialog();
+  if (enabled && (!endpoint || !password)) {
+    await persistState();
+    renderSyncStatus('请填写服务器地址和同步密码', 'error');
+    return;
+  }
+  await persistState();
+  if (!enabled) {
+    showToast('同步已关闭');
+    renderSyncAlert();
+    closeSyncDialog();
+    return;
+  }
+  await syncFromDialog();
+}
+
+async function syncNowFromDialog() {
+  const { endpoint, password } = syncFieldsFromDialog();
+  state.sync.enabled = true;
+  els.syncEnabled.checked = true;
+  if (!endpoint || !password) {
+    await persistState();
+    renderSyncStatus('请填写服务器地址和同步密码', 'error');
+    return;
+  }
+  await persistState();
+  await syncFromDialog();
+}
+
+async function syncFromDialog() {
+  const result = await runSync({ interactive: true });
+  renderSyncStatus();
+  renderBackupButton();
+  if (result.status === 'ok') {
+    showToast('同步完成');
+    closeSyncDialog();
+  }
+}
+
+function resetSyncPasswordVisibility() {
+  els.syncPassword.type = 'password';
+  const button = document.querySelector('[data-action="toggle-sync-password"]');
+  if (!button) return;
+  button.textContent = '显示';
+  button.setAttribute('aria-pressed', 'false');
+}
+
+function toggleSyncPasswordVisibility(button) {
+  const visible = els.syncPassword.type === 'text';
+  els.syncPassword.type = visible ? 'password' : 'text';
+  button.textContent = visible ? '显示' : '隐藏';
+  button.setAttribute('aria-pressed', String(!visible));
+}
+
+function renderSyncStatus(message = '', tone = '') {
+  if (!els.syncStatus) return;
+  const sync = state.sync;
+  let title;
+  let detail = '';
+  let statusTone = tone || 'idle';
+
+  if (message) {
+    title = message;
+  } else if (syncRunning) {
+    title = '正在同步…';
+    detail = syncProgress;
+    statusTone = 'busy';
+  } else if (!sync.enabled) {
+    title = '未开启';
+    detail = '开启后，收藏、排序、图标和壁纸会在你的电脑之间自动保持一致。';
+  } else if (!sync.endpoint || !sync.password) {
+    title = '请填写服务器地址和同步密码';
+    statusTone = 'error';
+  } else if (pendingChoice) {
+    title = '需要你确认一次';
+    detail = '本机和云端的收藏不一样。';
+    statusTone = 'attention';
+  } else if (sync.lastError) {
+    title = '同步失败';
+    detail = sync.lastError;
+    statusTone = 'error';
+  } else if (sync.lastSyncAt) {
+    title = '已同步';
+    const wallpaper = state.settings.wallpaper.hash ? ' · 壁纸已同步' : '';
+    detail = `${formatRelativeTime(sync.lastSyncAt)} · 收藏 ${state.shortcuts.length} 个${wallpaper}`;
+    statusTone = 'ok';
+  } else {
+    title = '尚未同步';
+    detail = '点保存后会连接服务器并完成第一次同步。';
+  }
+
+  els.syncStatus.textContent = title;
+  els.syncDetail.textContent = detail;
+  els.syncDetail.hidden = !detail;
+  els.syncStatusCard.dataset.tone = statusTone;
+}
+
+async function renderBackupButton() {
+  const backup = await readBackup();
+  const button = els.restoreBackupButton;
+  if (!button) return;
+  const missing = backup ? missingFromBackup(backup) : [];
+  button.hidden = missing.length === 0;
+  button.dataset.confirming = 'false';
+  if (missing.length) button.textContent = `找回 ${formatTime(backup.savedAt)} ${backup.reason}的 ${missing.length} 个网站`;
+}
+
+function renderSyncAlert() {
+  const needsAttention = Boolean(pendingChoice) || Boolean(state.sync.enabled && state.sync.lastError);
+  els.settingsMenu.dataset.alert = String(needsAttention);
+}
+
+// ------------------------------------------------------------- IndexedDB
 
 function openDb() {
   return new Promise((resolve, reject) => {
@@ -2051,6 +2335,7 @@ function openDb() {
       const db = request.result;
       if (!db.objectStoreNames.contains(WALLPAPER_STORE)) db.createObjectStore(WALLPAPER_STORE);
       if (!db.objectStoreNames.contains(ICON_STORE)) db.createObjectStore(ICON_STORE, { keyPath: 'id' });
+      if (!db.objectStoreNames.contains(BLOB_STORE)) db.createObjectStore(BLOB_STORE, { keyPath: 'hash' });
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
@@ -2071,167 +2356,107 @@ async function withObjectStore(storeName, mode, callback) {
   }
 }
 
-async function withWallpaperStore(mode, callback) {
-  return await withObjectStore(WALLPAPER_STORE, mode, callback);
-}
-
-async function saveWallpaperBlob(blob) {
-  await withWallpaperStore('readwrite', (store, resolve, reject) => {
-    const request = store.put(blob, WALLPAPER_ID);
-    request.onsuccess = () => resolve();
+function storeRequest(storeName, mode, run) {
+  return withObjectStore(storeName, mode, (store, resolve, reject) => {
+    const request = run(store);
+    request.onsuccess = () => resolve(request.result ?? null);
     request.onerror = () => reject(request.error);
   });
 }
 
-async function getWallpaperBlob() {
-  return await withWallpaperStore('readonly', (store, resolve, reject) => {
-    const request = store.get(WALLPAPER_ID);
-    request.onsuccess = () => resolve(request.result || null);
-    request.onerror = () => reject(request.error);
-  });
+// Version 1 kept a single wallpaper under one key; read during migration and
+// removed once it is stored by its hash.
+function getLegacyWallpaper() {
+  return storeRequest(WALLPAPER_STORE, 'readonly', store => store.get(LEGACY_WALLPAPER_ID));
 }
 
-async function deleteWallpaperBlob() {
-  await withWallpaperStore('readwrite', (store, resolve, reject) => {
-    const request = store.delete(WALLPAPER_ID);
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
+function deleteLegacyWallpaper() {
+  return storeRequest(WALLPAPER_STORE, 'readwrite', store => store.delete(LEGACY_WALLPAPER_ID));
 }
 
-async function hydrateShortcutIcons() {
-  const ids = new Set(state.shortcuts.map(item => item.iconId).filter(Boolean));
-  for (const id of activeIconUrls.keys()) {
-    if (!ids.has(id)) revokeActiveIconUrl(id);
+function saveIconRecord(record) {
+  return storeRequest(ICON_STORE, 'readwrite', store => store.put(record));
+}
+
+function getIconRecord(id) {
+  return storeRequest(ICON_STORE, 'readonly', store => store.get(id));
+}
+
+async function getAllIconRecords() {
+  return (await storeRequest(ICON_STORE, 'readonly', store => store.getAll())) || [];
+}
+
+function deleteIconRecord(id) {
+  return storeRequest(ICON_STORE, 'readwrite', store => store.delete(id));
+}
+
+function saveBlobRecord(hash, blob, mime) {
+  return storeRequest(BLOB_STORE, 'readwrite', store => store.put({ hash, blob, mime, size: blob.size, savedAt: Date.now() }));
+}
+
+function getBlobRecord(hash) {
+  return storeRequest(BLOB_STORE, 'readonly', store => store.get(hash));
+}
+
+// ------------------------------------------------------------- utilities
+
+function showToast(message, action = null) {
+  els.toast.replaceChildren(document.createTextNode(message));
+  if (action) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'toast-action';
+    button.textContent = action.label;
+    button.addEventListener('click', event => {
+      event.stopPropagation();
+      hideToast();
+      action.run();
+    });
+    els.toast.append(button);
   }
-
-  await Promise.all([...ids].map(async id => {
-    if (activeIconUrls.has(id)) return;
-    const record = await getIconRecord(id);
-    if (record?.blob) setActiveIconUrl(id, record.blob);
-  }));
+  els.toast.classList.toggle('has-action', Boolean(action));
+  els.toast.classList.add('visible');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(hideToast, action ? 8000 : 1800);
 }
 
-async function cacheMissingShortcutIcons() {
-  let changed = false;
-  for (const item of state.shortcuts) {
-    if (item.iconId) continue;
-    const sources = iconCandidatesForUrl(item.url, item.title)
-      .filter(candidate => candidate.kind !== 'fallback')
-      .map(candidate => candidate.url);
-    const cached = await cacheFirstAvailableIcon(item.id, sources);
-    if (!cached) continue;
-    item.iconId = item.id;
-    item.iconUrl = isHttpUrl(cached.sourceUrl) ? cached.sourceUrl : '';
-    item.updatedAt = Date.now();
-    changed = true;
-  }
-
-  if (changed) {
-    await saveState();
-    render();
-  }
+function hideToast() {
+  els.toast.classList.remove('visible', 'has-action');
 }
 
-async function cacheFirstAvailableIcon(id, sourceUrls) {
-  for (const sourceUrl of sourceUrls) {
-    try {
-      const blob = await iconSourceToBlob(sourceUrl);
-      await saveIconRecord(id, blob, sourceUrl);
-      setActiveIconUrl(id, blob);
-      return { sourceUrl, blob };
-    } catch {
-      // Try the next candidate; favicon endpoints are often inconsistent.
-    }
-  }
-  return null;
+function formatBytes(bytes) {
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-async function iconSourceToBlob(sourceUrl) {
-  if (isImageDataUrl(sourceUrl)) return dataUrlToBlob(sourceUrl);
-  if (!isFetchableIconUrl(sourceUrl)) throw new Error('Unsupported icon source');
-
-  const response = await fetch(sourceUrl, {
-    cache: 'force-cache',
-    credentials: 'omit',
-  });
-  if (!response.ok) throw new Error(`Icon request failed: ${response.status}`);
-
-  const blob = await response.blob();
-  if (!blob.size) throw new Error('Empty icon response');
-  if (blob.type.startsWith('image/')) return blob;
-
-  return new Blob([await blob.arrayBuffer()], { type: guessImageType(sourceUrl) });
+function formatTime(timestamp) {
+  const date = new Date(timestamp);
+  const pad = value => String(value).padStart(2, '0');
+  return `${date.getMonth() + 1}/${date.getDate()} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-function guessImageType(url) {
-  if (/\.svg(\?|#|$)/i.test(url)) return 'image/svg+xml';
-  if (/\.ico(\?|#|$)/i.test(url)) return 'image/x-icon';
-  if (/\.jpe?g(\?|#|$)/i.test(url)) return 'image/jpeg';
-  if (/\.webp(\?|#|$)/i.test(url)) return 'image/webp';
-  return 'image/png';
+function formatRelativeTime(timestamp) {
+  const seconds = Math.round((Date.now() - timestamp) / 1000);
+  if (seconds < 60) return '刚刚';
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟前`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)} 小时前`;
+  return formatTime(timestamp);
+}
+
+function isImageDataUrl(value) {
+  return typeof value === 'string'
+    && (/^data:image\/[a-z0-9.+-]+;base64,/i.test(value) || /^data:image\/svg\+xml,/i.test(value));
 }
 
 function dataUrlToBlob(dataUrl) {
   const match = /^data:([^;,]+)?(;base64)?,(.*)$/i.exec(dataUrl);
   if (!match) throw new Error('Invalid data URL');
-
   const type = match[1] || 'image/png';
   const encoded = match[3] || '';
   const binary = match[2] ? atob(encoded) : decodeURIComponent(encoded);
   const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
   return new Blob([bytes], { type });
-}
-
-function setActiveIconUrl(id, blob) {
-  revokeActiveIconUrl(id);
-  activeIconUrls.set(id, URL.createObjectURL(blob));
-}
-
-function revokeActiveIconUrl(id) {
-  const url = activeIconUrls.get(id);
-  if (url) URL.revokeObjectURL(url);
-  activeIconUrls.delete(id);
-}
-
-async function saveIconRecord(id, blob, sourceUrl) {
-  await withObjectStore(ICON_STORE, 'readwrite', (store, resolve, reject) => {
-    const request = store.put({
-      id,
-      blob,
-      sourceUrl,
-      updatedAt: Date.now(),
-    });
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
-  });
-}
-
-async function getIconRecord(id) {
-  return await withObjectStore(ICON_STORE, 'readonly', (store, resolve, reject) => {
-    const request = store.get(id);
-    request.onsuccess = () => resolve(request.result || null);
-    request.onerror = () => reject(request.error);
-  });
-}
-
-async function deleteIconRecord(id) {
-  revokeActiveIconUrl(id);
-  await withObjectStore(ICON_STORE, 'readwrite', (store, resolve, reject) => {
-    const request = store.delete(id);
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-}
-
-function showToast(message) {
-  els.toast.textContent = message;
-  els.toast.classList.add('visible');
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => els.toast.classList.remove('visible'), 1800);
 }
 
 function sleep(ms) {
