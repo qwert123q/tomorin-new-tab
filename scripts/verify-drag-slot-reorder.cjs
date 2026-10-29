@@ -185,7 +185,49 @@ async function assertFastPageSwitch(page, targetPage) {
     `dragging on page two should insert at that page slot and push later items, got ${secondPageIds.join(',')}`,
   );
 
-  console.log(JSON.stringify({ slotCount, order, firstPageLast, secondPageIds }, null, 2));
+  // Moving between pages: hold the dragged icon beside the grid until the page
+  // turns, then drop it into a slot on that page.
+  await page.click('[data-action="go-page"][data-page="0"]');
+  await page.waitForFunction(() => document.querySelector('.page-dot.active')?.dataset.page === '0');
+  const crossPage = await page.evaluate(async () => {
+    const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+    const source = document.querySelector('.shortcut-page.is-active [data-id="site-2"]');
+    const data = new DataTransfer();
+    source.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: data }));
+    const viewport = document.querySelector('.shortcut-viewport').getBoundingClientRect();
+    const x = viewport.right + 24;
+    const y = viewport.top + 120;
+    const hover = () => (document.elementFromPoint(x, y) || document.body)
+      .dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: data, clientX: x, clientY: y }));
+    hover();
+    const glowing = document.querySelector('.shortcut-area').classList.contains('flip-next');
+    await wait(150);
+    hover();
+    const tooEarly = state.settings.currentPage;
+    await wait(400);
+    hover();
+    await wait(150);
+    const turnedTo = state.settings.currentPage;
+    const target = document.querySelector('.shortcut-page.is-active [data-slot-index="1"]');
+    target.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: data }));
+    target.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: data }));
+    source.dispatchEvent(new DragEvent('dragend', { bubbles: true, cancelable: true, dataTransfer: data }));
+    await wait(100);
+    return {
+      glowing,
+      tooEarly,
+      turnedTo,
+      glowAfter: document.querySelector('.shortcut-area').classList.contains('flip-next'),
+      secondPage: [...document.querySelectorAll('.shortcut-page.is-active .shortcut-card')].map(card => card.dataset.id),
+    };
+  });
+  assert(crossPage.glowing, 'the page edge should light up while a page turn is pending');
+  assert(crossPage.tooEarly === 0, 'a quick pass along the edge must not turn the page');
+  assert(crossPage.turnedTo === 1, `holding the icon beside the grid should turn to the next page, got ${crossPage.turnedTo}`);
+  assert(crossPage.secondPage[1] === 'site-2', `the icon should land in the chosen slot of page two, got ${crossPage.secondPage.join(',')}`);
+  assert(!crossPage.glowAfter, 'the edge glow should clear after the drop');
+
+  console.log(JSON.stringify({ slotCount, order, firstPageLast, secondPageIds, crossPage }, null, 2));
 
   await browser.close();
 })().catch(error => {

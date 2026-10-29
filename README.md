@@ -31,6 +31,7 @@ Tomorin New Tab is a lightweight, local-first Chrome new tab extension inspired 
 ### Editing
 
 - Right-click (two-finger click on a trackpad) a shortcut to enter edit mode: drag to reorder, click to edit, remove with the corner badge (with undo), and click anywhere outside the icons to finish.
+- To move a shortcut to another page, hold it beside the grid (or over a page dot) while dragging until the page turns, then drop it into a slot.
 - The last slot in edit mode is an **Add** tile that matches the other icons.
 
 ### Optional self-hosted sync

@@ -27,6 +27,8 @@ const ICON_RECHECK_MISSING_MS = 12 * 60 * 60 * 1000;
 const ICON_RETRY_TRANSIENT_MS = 20 * 60 * 1000;
 const ICON_SHARP_SIDE = 120;
 const ICON_WORKERS = 3;
+const DRAG_FLIP_DELAY_MS = 450;
+const DRAG_FLIP_EDGE_PX = 12;
 const BACKUP_DELETE_THRESHOLD = 3;
 const SEARCH_ENGINES = new Set(['default', 'bing']);
 const TAB_ID = crypto.randomUUID();
@@ -47,6 +49,7 @@ const els = {
   shell: document.querySelector('.newtab-shell'),
   searchForm: document.getElementById('searchForm'),
   searchInput: document.getElementById('searchInput'),
+  shortcutArea: document.querySelector('.shortcut-area'),
   shortcutViewport: document.getElementById('shortcutViewport'),
   shortcutPages: document.getElementById('shortcutPages'),
   emptyState: document.getElementById('emptyState'),
@@ -83,6 +86,7 @@ let editMode = false;
 let editingId = null;
 let draggedId = null;
 let activeDropSlot = null;
+let dragFlip = null;
 let activeWallpaperUrl = null;
 let toastTimer = null;
 let touchStartX = 0;
@@ -145,6 +149,11 @@ function bindEvents() {
   document.addEventListener('keydown', handleKeydown);
   els.shortcutPages.addEventListener('dragstart', handleDragStart);
   els.shortcutPages.addEventListener('dragover', handleDragOver);
+  document.addEventListener('dragover', handleDragFlip);
+  // Let go outside the grid: nothing moves and the browser does nothing either.
+  document.addEventListener('drop', event => {
+    if (draggedId) event.preventDefault();
+  });
   els.shortcutPages.addEventListener('drop', handleDrop);
   els.shortcutPages.addEventListener('dragend', handleDragEnd);
   els.shortcutPages.addEventListener('contextmenu', handleShortcutContextMenu);
@@ -1502,8 +1511,51 @@ async function handleDrop(event) {
   render();
 }
 
+// While dragging, holding the icon beside the grid or over a page dot turns
+// the page, so a shortcut can be moved to any page.
+function handleDragFlip(event) {
+  if (!editMode || !draggedId) return;
+  const target = dragFlipTarget(event);
+  const current = state.settings.currentPage;
+  els.shortcutArea.classList.toggle('flip-prev', target !== null && target < current);
+  els.shortcutArea.classList.toggle('flip-next', target !== null && target > current);
+  if (target === null) {
+    dragFlip = null;
+    return;
+  }
+  event.preventDefault();
+  const now = performance.now();
+  if (!dragFlip || dragFlip.page !== target) {
+    dragFlip = { page: target, since: now };
+    return;
+  }
+  if (now - dragFlip.since < DRAG_FLIP_DELAY_MS) return;
+  dragFlip = null;
+  goToPage(target);
+}
+
+function dragFlipTarget(event) {
+  const current = state.settings.currentPage;
+  const dot = event.target.closest?.('.page-dot');
+  if (dot) {
+    const page = Number(dot.dataset.page);
+    return Number.isFinite(page) && page !== current ? page : null;
+  }
+  const viewport = els.shortcutViewport.getBoundingClientRect();
+  if (event.clientY < viewport.top - 40 || event.clientY > viewport.bottom + 40) return null;
+  const page = activeShortcutPage();
+  const style = page ? getComputedStyle(page) : null;
+  const gridLeft = viewport.left + (style ? parseFloat(style.paddingLeft) || 0 : 0);
+  const gridRight = viewport.right - (style ? parseFloat(style.paddingRight) || 0 : 0);
+  if (event.clientX < Math.max(viewport.left + DRAG_FLIP_EDGE_PX, gridLeft - 4)) return current > 0 ? current - 1 : null;
+  if (event.clientX > Math.min(viewport.right - DRAG_FLIP_EDGE_PX, gridRight + 4)) return current < pageCount() - 1 ? current + 1 : null;
+  return null;
+}
+
 function handleDragEnd() {
   draggedId = null;
+  dragFlip = null;
+  els.shortcutArea.classList.remove('flip-prev', 'flip-next');
   setActiveDropSlot(null);
   document.querySelectorAll('.shortcut-card.dragging').forEach(card => card.classList.remove('dragging'));
 }

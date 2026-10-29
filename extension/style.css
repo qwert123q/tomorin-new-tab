@@ -186,6 +186,40 @@ button {
   overflow: hidden;
 }
 
+/* Arrow shown at the side while a dragged icon is about to turn the page. */
+.shortcut-area::before,
+.shortcut-area::after {
+  position: absolute;
+  top: 120px;
+  z-index: 1;
+  width: 34px;
+  height: 92px;
+  border-radius: 17px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.32), 0 8px 24px rgba(0, 0, 0, 0.16);
+  backdrop-filter: blur(12px);
+  content: "";
+  opacity: 0;
+  pointer-events: none;
+  transform: scale(0.88);
+  transition: opacity 140ms ease, transform 140ms ease;
+}
+
+.shortcut-area::before {
+  left: 0;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M15 5l-7 7 7 7'/%3E%3C/svg%3E") center / 16px 16px no-repeat, rgba(255, 255, 255, 0.2);
+}
+
+.shortcut-area::after {
+  right: 0;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 5l7 7-7 7'/%3E%3C/svg%3E") center / 16px 16px no-repeat, rgba(255, 255, 255, 0.2);
+}
+
+.shortcut-area.flip-prev::before,
+.shortcut-area.flip-next::after {
+  opacity: 1;
+  transform: scale(1);
+}
+
 .shortcut-viewport {
   width: 100%;
   min-height: 406px;
