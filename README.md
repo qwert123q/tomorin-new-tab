@@ -43,6 +43,8 @@ Keeps shortcuts, their order, icon choices, uploaded icons, icon density and the
 - The first time a computer with different shortcuts syncs, you choose: use the cloud copy, merge both, or use this computer's copy. Nothing is overwritten silently.
 - After that each part of a shortcut merges on its own: a rename on one computer and a move on another both survive, and two computers syncing at the same moment cannot overwrite each other.
 - Wallpapers and uploaded icons are uploaded once by content hash and downloaded only by computers that are missing them.
+- Only changes made on this computer sync on their own: they are uploaded quietly a few seconds after the last edit. Without changes nothing is synced; to get changes made on other computers, click **Sync now** in sync settings (an upload brings them along too).
+- A change that could not be uploaded yet (the tab was closed first, or the network was down) goes up the next time a new tab opens or the network comes back.
 - Before the first sync replaces local data, or a sync removes several shortcuts, a local backup is kept and can be brought back from sync settings.
 
 See [server/README.md](server/README.md) for setup.
@@ -69,7 +71,7 @@ The zip file is written to `dist/`. See [docs/release.md](docs/release.md) for r
 
 - Local data is migrated the first time a new tab opens. Previously cached icons keep showing until a sharper one is found.
 - The sync protocol changed: update the sync server first, then the extension on each computer. The old access token still works as the sync password.
-- Upgrade and sync your main computer first so its shortcuts become the starting cloud copy, then choose **Use cloud data** on the other computers.
+- Upgrade your main computer first and click **Sync now** in sync settings, so its shortcuts become the starting cloud copy. Then do the same on the other computers and choose **Use cloud data**.
 
 ## Local Data
 

@@ -18,9 +18,10 @@ const PAGE_SCROLL_DURATION_MS = 45;
 const DEFAULT_SHORTCUT_STAMP = 1700000000000;
 const SYNC_REQUEST_TIMEOUT_MS = 10000;
 const SYNC_BLOB_TIMEOUT_MS = 180000;
-const SYNC_DEBOUNCE_MS = 700;
-const SYNC_MIN_CHECK_INTERVAL_MS = 15000;
-const SYNC_VISIBLE_CHECK_MS = 60000;
+// Only changes made on this computer sync on their own: they are uploaded a
+// few seconds after the last edit, so a burst of edits goes up together.
+// Changes from other computers arrive with "Sync now", or along with an upload.
+const SYNC_DEBOUNCE_MS = 3000;
 const MAX_WALLPAPER_BYTES = 100 * 1024 * 1024;
 const ICON_RECHECK_SMALL_MS = 3 * 24 * 60 * 60 * 1000;
 const ICON_RECHECK_MISSING_MS = 12 * 60 * 60 * 1000;
@@ -133,7 +134,9 @@ async function init() {
   stateReady = true;
   for (const value of earlyStates.splice(0)) await handleExternalState(value);
   queueStaleIcons();
-  scheduleSync('startup');
+  // Changes saved but not uploaded yet (the tab closed first, or the network
+  // was down) go up now. Without such changes nothing is synced.
+  if (hasPendingUpload()) scheduleSync('startup');
 }
 
 function bindEvents() {
@@ -161,11 +164,9 @@ function bindEvents() {
   els.shell.addEventListener('wheel', handleShortcutWheel, { passive: true });
   els.shell.addEventListener('touchstart', handleTouchStart, { passive: true });
   els.shell.addEventListener('touchend', handleTouchEnd, { passive: true });
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState !== 'visible') return;
-    if (Date.now() - (state.sync.lastCheckAt || 0) > SYNC_VISIBLE_CHECK_MS) scheduleSync('visible');
+  window.addEventListener('online', () => {
+    if (hasPendingUpload()) scheduleSync('online');
   });
-  window.addEventListener('online', () => scheduleSync('online'));
 }
 
 // ------------------------------------------------------------------ state
@@ -213,7 +214,6 @@ function normalizeSyncConfig(raw = {}) {
     linked: typeof source.linked === 'string' ? source.linked : '',
     dirty: source.dirty !== false,
     lastSyncAt: Number.isFinite(source.lastSyncAt) ? source.lastSyncAt : 0,
-    lastCheckAt: Number.isFinite(source.lastCheckAt) ? source.lastCheckAt : 0,
     lastError: typeof source.lastError === 'string' ? source.lastError.slice(0, 160) : '',
   };
 }
@@ -531,7 +531,6 @@ async function handleExternalState(value) {
     if (mine.endpoint === incoming.sync.endpoint && mine.lastSyncAt > incoming.sync.lastSyncAt) {
       next.sync = { ...next.sync, rev: mine.rev, linked: mine.linked, lastSyncAt: mine.lastSyncAt, lastError: mine.lastError };
     }
-    next.sync.lastCheckAt = Math.max(mine.lastCheckAt || 0, incoming.sync.lastCheckAt || 0);
     if (writeBack) next.sync.dirty = true;
   }
 
@@ -1758,24 +1757,33 @@ function normalizeSyncEndpoint(value) {
   }
 }
 
+// Changes made here that have not reached the linked server yet. Before the
+// first sync with a server nothing goes up on its own: that sync is started
+// from sync settings.
+function hasPendingUpload() {
+  return syncConfigured() && state.sync.dirty && state.sync.linked === state.sync.endpoint;
+}
+
+// Uploads this computer's changes in the background. It is called only after a
+// change, or when an earlier change is still waiting to go up.
 function scheduleSync(reason) {
   if (!syncConfigured()) return;
   clearTimeout(syncTimer);
   const delay = { startup: 600, busy: 3000 }[reason] ?? SYNC_DEBOUNCE_MS;
   syncTimer = setTimeout(async () => {
-    const result = await runSync({ reason: reason === 'busy' ? 'change' : reason }).catch(() => null);
+    const result = await runSync().catch(() => null);
     // Another sync (in this tab or another one) was still running, for example
     // downloading a wallpaper: try again so this change is not left behind.
     if (result?.status === 'busy') scheduleSync('busy');
   }, delay);
 }
 
-async function runSync({ reason = 'manual', interactive = false, choice = null } = {}) {
+// Background syncs only run when this computer has changes to upload; "Sync
+// now" (interactive) always runs.
+async function runSync({ interactive = false, choice = null } = {}) {
   if (!syncConfigured()) return { status: 'disabled' };
-  const recentlyChecked = Date.now() - (state.sync.lastCheckAt || 0) < SYNC_MIN_CHECK_INTERVAL_MS;
-  if (!interactive && reason !== 'change' && !state.sync.dirty && recentlyChecked && !pendingChoice) return { status: 'skipped' };
-  if (pendingChoice && !choice && !interactive) return { status: 'needs-choice' };
-  return await withSyncLock(() => syncOnce({ interactive, choice }), { wait: interactive });
+  if (!interactive && !hasPendingUpload()) return { status: 'skipped' };
+  return await withSyncLock(() => syncOnce({ choice }), { wait: interactive });
 }
 
 async function withSyncLock(task, { wait = false } = {}) {
@@ -1815,7 +1823,7 @@ async function withSyncLock(task, { wait = false } = {}) {
   }
 }
 
-async function syncOnce({ interactive = false, choice = null } = {}) {
+async function syncOnce({ choice = null } = {}) {
   // Every request of this run goes to the server it started with; if the
   // settings change meanwhile, the run stops and a new one starts.
   const target = { endpoint: state.sync.endpoint, password: state.sync.password };
@@ -1835,8 +1843,7 @@ async function syncOnce({ interactive = false, choice = null } = {}) {
       const localDoc = docFromState();
 
       if (remote.notModified && !state.sync.dirty) {
-        const now = Date.now();
-        state.sync = { ...state.sync, lastSyncAt: now, lastCheckAt: now, lastError: '' };
+        state.sync = { ...state.sync, lastSyncAt: Date.now(), lastError: '' };
         await persistState();
         renderSyncAlert();
         await downloadMissingBlobs(docFromState(), target);
@@ -1852,9 +1859,7 @@ async function syncOnce({ interactive = false, choice = null } = {}) {
         const decision = choice || automaticFirstSyncChoice(localDoc, remote.doc);
         if (!decision) {
           pendingChoice = { summary: core.summarizeDifference(localDoc, remote.doc) };
-          state.sync.lastCheckAt = Date.now();
-          await persistState();
-          announceSyncChoice(interactive);
+          announceSyncChoice();
           return { status: 'needs-choice' };
         }
         if (decision === 'cloud') {
@@ -1891,7 +1896,6 @@ async function syncOnce({ interactive = false, choice = null } = {}) {
     throw new SyncError('conflict');
   } catch (error) {
     state.sync.lastError = friendlySyncError(error);
-    state.sync.lastCheckAt = Date.now();
     await persistState();
     renderSyncAlert();
     return { status: 'error', error };
@@ -1934,8 +1938,7 @@ async function finishSync({ doc, rev, endpoint, replace, snapshot = null, stale 
     state.generation = (state.generation || 0) + 1;
     state.replaced = { generation: state.generation, snapshot: snapshot ? core.normalizeDoc(snapshot) : null };
   }
-  const now = Date.now();
-  state.sync = { ...state.sync, rev, linked: endpoint, dirty, lastSyncAt: now, lastCheckAt: now, lastError: '' };
+  state.sync = { ...state.sync, rev, linked: endpoint, dirty, lastSyncAt: Date.now(), lastError: '' };
   await persistState();
   if (changed) {
     await hydrateShortcutIcons();
@@ -2224,14 +2227,13 @@ function showSyncChoice() {
   els.syncChoice.hidden = false;
 }
 
-function announceSyncChoice(interactive) {
+// The question shows in the sync dialog; if it was closed meanwhile, the gear
+// shows a dot until the question is answered.
+function announceSyncChoice() {
   renderSyncAlert();
-  if (els.syncDialog.open) {
-    showSyncChoice();
-    renderSyncStatus();
-  } else if (!interactive) {
-    showToast('同步需要你确认一次', { label: '去处理', run: () => openSyncDialog() });
-  }
+  if (!els.syncDialog.open) return;
+  showSyncChoice();
+  renderSyncStatus();
 }
 
 async function confirmSyncChoice() {
@@ -2335,7 +2337,7 @@ function renderSyncStatus(message = '', tone = '') {
     statusTone = 'busy';
   } else if (!sync.enabled) {
     title = '未开启';
-    detail = '开启后，收藏、排序、图标和壁纸会在你的电脑之间自动保持一致。';
+    detail = '开启后，收藏、排序、图标和壁纸可以在你的电脑之间同步。';
   } else if (!sync.endpoint || !sync.password) {
     title = '请填写服务器地址和同步密码';
     statusTone = 'error';

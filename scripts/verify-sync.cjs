@@ -128,8 +128,9 @@ function wallpaperSvg() {
   const report = {};
 
   try {
-    // 1. The main computer upgrades from version 1 with its old token saved. The
-    //    new server is empty, so its shortcuts become the cloud copy.
+    // 1. The main computer upgrades from version 1 with its old token saved.
+    //    Nothing syncs until "Sync now"; the new server is empty, so its
+    //    shortcuts become the cloud copy.
     const main = await newComputer(browser, {
       shortcuts: [
         legacyShortcut('gh', 'GitHub', 'https://github.com', 0),
@@ -141,7 +142,10 @@ function wallpaperSvg() {
       settings: { currentPage: 0, wallpaper: { type: 'none' }, iconDensity: 'small', searchEngine: 'bing' },
       sync: { enabled: true, endpoint: server.url, token: password, lastSyncAt: 0, pending: true, lastError: '' },
     });
-    await waitFor(async () => (await server.state()).rev >= 1, 'main computer should upload to the empty server');
+    await main.page.waitForTimeout(1500);
+    assert.equal((await server.state()).rev, 0, 'opening a new tab must not sync by itself');
+    assert.equal(await syncNow(main.page), 'ok');
+    assert.ok((await server.state()).rev >= 1, 'main computer should upload to the empty server');
     assert.deepEqual(await serverTitles(server), ['GitHub', '哔哩哔哩', '携程网', '知乎']);
     const mainState = await stored(main.page);
     assert.equal(mainState.version, 2, 'old data should be migrated');
@@ -313,12 +317,13 @@ function wallpaperSvg() {
       settings: { currentPage: 0, wallpaper: { type: 'none' }, iconDensity: 'small' },
       sync: { enabled: true, endpoint: server.url, token: password, lastSyncAt: 0, pending: true, lastError: '' },
     });
-    await oldComputer.page.waitForSelector('.toast.visible .toast-action');
+    await oldComputer.page.hover('.settings-trigger');
+    await oldComputer.page.click('[data-action="open-sync-dialog"]');
+    await oldComputer.page.click('[data-action="sync-now"]');
+    await oldComputer.page.waitForSelector('#syncChoice:not([hidden])');
     const untouched = await serverTitles(server);
     assert.ok(!untouched.includes('微博'), 'nothing may be uploaded before the choice');
     const cloudCount = untouched.length;
-    await oldComputer.page.click('.toast-action');
-    await oldComputer.page.waitForSelector('#syncChoice:not([hidden])');
     const summary = await oldComputer.page.$eval('#syncChoiceSummary', node => node.textContent);
     assert.ok(summary.includes(`云端有 ${cloudCount} 个网站`) && summary.includes('本机有 2 个'), `choice should explain the difference, got ${summary}`);
     // A second tab adds a site that the tab answering the question has not
@@ -384,6 +389,42 @@ function wallpaperSvg() {
     await laptop.context.unroute(/\/api\/v2\/blobs\//);
     report.changeDuringDownload = 'synced after the download';
 
+    // 14a. Without a change nothing syncs on its own: not a new tab, not the
+    //     network coming back, not the tab coming back into view.
+    assert.equal(await syncNow(main.page), 'ok');
+    const mainRequests = [];
+    const recordRequest = request => {
+      if (request.url().startsWith(server.url)) mainRequests.push(`${request.method()} ${new URL(request.url()).pathname}`);
+    };
+    main.context.on('request', recordRequest);
+    const quietTab = await main.context.newPage();
+    await quietTab.goto(pageUrl, { waitUntil: 'domcontentloaded' });
+    await quietTab.waitForSelector('.shortcut-card');
+    await quietTab.evaluate(() => {
+      window.dispatchEvent(new Event('online'));
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await quietTab.waitForTimeout(1500);
+    assert.deepEqual(mainRequests, [], 'with no changes nothing may be synced automatically');
+
+    // A change saved by a tab that closed before uploading goes up when the
+    // next new tab opens. (The main tab is kept from uploading it meanwhile.)
+    await main.page.evaluate(() => { scheduleSync = () => {}; });
+    await quietTab.evaluate(() => {
+      scheduleSync = () => {};
+      const stamp = nextStamp();
+      state.shortcuts.push({ id: 'left-behind', title: '关闭前添加', url: 'https://left-behind.example', size: 'small', icon: null, pos: core.keyBetween(orderedShortcuts().at(-1).pos, null), editedAt: stamp, movedAt: stamp, createdAt: stamp });
+      return commitChange();
+    });
+    await quietTab.close();
+    const nextTab = await main.context.newPage();
+    await nextTab.goto(pageUrl, { waitUntil: 'domcontentloaded' });
+    await waitFor(async () => (await serverTitles(server)).includes('关闭前添加'), 'a change left behind should upload when the next new tab opens');
+    main.context.off('request', recordRequest);
+    await nextTab.close();
+    await main.page.evaluate(() => { scheduleSync = globalThis.__holdSync; });
+    report.quietWithoutChanges = `no requests without changes; left-behind change uploaded by the next tab (${mainRequests.join(', ')})`;
+
     // 14. Switching to another server while a sync is in flight: the old run
     //    must not write this computer's copy to the new server.
     const otherServer = await startServer();
@@ -403,7 +444,7 @@ function wallpaperSvg() {
         state.shortcuts.push({ id: 'before-switch', title: '切换前添加', url: 'https://switch.example', size: 'small', icon: null, pos: core.keyBetween(orderedShortcuts().at(-1).pos, null), editedAt: stamp, movedAt: stamp, createdAt: stamp });
         state.sync.dirty = true;
         persistState();
-        runSync({ reason: 'change' });
+        runSync();
       });
       await laptop.page.waitForTimeout(300);
       await laptop.page.hover('.settings-trigger');
