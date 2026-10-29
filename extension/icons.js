@@ -12,7 +12,7 @@
 
   const { normalizeUrl, siteOrigin, hostnameFromUrl, isHttpUrl } = root.TomorinCore;
 
-  const PIPELINE = 3;
+  const PIPELINE = 4;
   const TILE = 256;
   const FETCH_TIMEOUT_MS = 7000;
   const PAGE_TIMEOUT_MS = 8000;
@@ -431,7 +431,6 @@
       edges,
       bbox: maxX < 0 ? null : { x: minX / n, y: minY / n, w: (maxX - minX + 1) / n, h: (maxY - minY + 1) / n },
       lum: lumWeight ? lumSum / lumWeight : 0,
-      edgeColor: `rgb(${Math.round(r)}, ${Math.round(g)}, ${Math.round(b)})`,
       edgeUniform: spread / ring.length < 24,
     };
   }
@@ -574,6 +573,69 @@
     });
   }
 
+  // Fills the tile around the box so the favicon's own colours carry on to the
+  // tile edge: right next to it they repeat its outermost pixels, so there is
+  // no edge; further out they soften, so specks along its border do not turn
+  // into stripes.
+  function extendEdges(ctx, box) {
+    const image = ctx.getImageData(0, 0, TILE, TILE);
+    const { data } = image;
+    // Scaling can leave the box's outermost pixels partly see-through.
+    const x0 = box.x + 1;
+    const y0 = box.y + 1;
+    const x1 = box.x + box.w - 2;
+    const y1 = box.y + box.h - 2;
+    const distance = (x, y) => Math.max(x0 - x, x - x1, y0 - y, y - y1);
+    for (let y = 0; y < TILE; y += 1) {
+      const sy = Math.min(y1, Math.max(y0, y));
+      for (let x = 0; x < TILE; x += 1) {
+        if (distance(x, y) <= 0) continue;
+        const from = (sy * TILE + Math.min(x1, Math.max(x0, x))) * 4;
+        const to = (y * TILE + x) * 4;
+        for (let channel = 0; channel < 4; channel += 1) data[to + channel] = data[from + channel];
+      }
+    }
+    const soft = blurred(data, 10);
+    for (let y = 0; y < TILE; y += 1) {
+      for (let x = 0; x < TILE; x += 1) {
+        const away = distance(x, y);
+        if (away <= 0) continue;
+        const mix = Math.min(1, away / 12);
+        const at = (y * TILE + x) * 4;
+        for (let channel = 0; channel < 4; channel += 1) {
+          data[at + channel] = Math.round(data[at + channel] + (soft[at + channel] - data[at + channel]) * mix);
+        }
+      }
+    }
+    ctx.putImageData(image, 0, 0);
+  }
+
+  // Box blur run twice each way (close to a Gaussian). Past the tile edge the
+  // nearest pixel repeats, so the edge stays opaque.
+  function blurred(pixels, radius) {
+    let from = Float32Array.from(pixels);
+    let to = new Float32Array(pixels.length);
+    for (let pass = 0; pass < 4; pass += 1) {
+      const across = pass % 2 === 0;
+      for (let line = 0; line < TILE; line += 1) {
+        const index = step => {
+          const along = Math.min(TILE - 1, Math.max(0, step));
+          return (across ? line * TILE + along : along * TILE + line) * 4;
+        };
+        for (let channel = 0; channel < 4; channel += 1) {
+          let sum = 0;
+          for (let step = -radius; step <= radius; step += 1) sum += from[index(step) + channel];
+          for (let step = 0; step < TILE; step += 1) {
+            to[index(step) + channel] = sum / (radius * 2 + 1);
+            sum += from[index(step + radius + 1) + channel] - from[index(step - radius) + channel];
+          }
+        }
+      }
+      [from, to] = [to, from];
+    }
+    return from;
+  }
+
   async function compose(item) {
     const raster = rasterOf(item);
     const stats = item.stats || analyze(raster);
@@ -587,16 +649,17 @@
 
     let kind;
     if (stats.corner > 230 && small && stats.edgeUniform) {
-      // A small favicon on a plain square: drawn smaller on its own colour it
-      // looks the same and is far less blurred than stretched.
+      // A small favicon on a plain square: drawn smaller it is far less blurred
+      // than stretched. The space around it repeats the favicon's own outer
+      // pixels, so a gradient or a slightly uneven colour shows no edge.
       kind = 'full';
-      ctx.fillStyle = stats.edgeColor;
-      ctx.fillRect(0, 0, TILE, TILE);
-      const target = TILE * frameRatio(item);
-      const scale = target / Math.max(raster.width, raster.height);
-      const w = raster.width * scale;
-      const h = raster.height * scale;
-      ctx.drawImage(raster.source, (TILE - w) / 2, (TILE - h) / 2, w, h);
+      const scale = (TILE * frameRatio(item)) / Math.max(raster.width, raster.height);
+      const w = Math.round(raster.width * scale);
+      const h = Math.round(raster.height * scale);
+      const x = Math.round((TILE - w) / 2);
+      const y = Math.round((TILE - h) / 2);
+      ctx.drawImage(raster.source, x, y, w, h);
+      extendEdges(ctx, { x, y, w, h });
     } else if (stats.corner > 230) {
       kind = 'full';
       const scale = Math.max(TILE / raster.width, TILE / raster.height);

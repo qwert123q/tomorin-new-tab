@@ -57,6 +57,15 @@ const legacyState = {
         ctx.fillRect(0, 0, 180, 180);
         return new Response(await canvas.convertToBlob({ type: 'image/png' }), { status: 200, headers: { 'Content-Type': 'image/png' } });
       }
+      if (url === 'https://redraw.example/favicon.ico') {
+        const canvas = new OffscreenCanvas(32, 32);
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#0a84ff';
+        ctx.fillRect(0, 0, 32, 32);
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(10, 10, 12, 12);
+        return new Response(await canvas.convertToBlob({ type: 'image/png' }), { status: 200, headers: { 'Content-Type': 'image/png' } });
+      }
       if (url.startsWith('https://flaky.example/')) throw new TypeError('Failed to fetch');
       return new Response('', { status: 404 });
     };
@@ -184,7 +193,33 @@ const legacyState = {
   const repaired = await page.evaluate(() => ({ icon: state.shortcuts[0].icon, dirty: state.sync.dirty }));
   assert(repaired.icon?.type === 'letter', `an SVG picture icon should become a letter tile, got ${JSON.stringify(repaired.icon)}`);
 
-  console.log(JSON.stringify({ firstPaint, after, reloadFetches: reload.fetches.length }, null, 2));
+  // Tiles drawn by version 3 stay, except small favicons drawn on one flat
+  // colour, which could show an edge around the favicon: those are redrawn.
+  await page.evaluate(async () => {
+    const canvas = new OffscreenCanvas(256, 256);
+    canvas.getContext('2d').fillRect(0, 0, 256, 256);
+    const tile = await canvas.convertToBlob({ type: 'image/png' });
+    for (const [id, width] of [['redraw', 32], ['keep-v3', 180]]) {
+      const stamp = nextStamp();
+      const item = { id, title: id, url: `https://${id}.example`, size: 'small', icon: null, pos: core.keyBetween(orderedShortcuts().at(-1).pos, null), editedAt: stamp, movedAt: stamp, createdAt: stamp };
+      state.shortcuts.push(item);
+      await saveIconRecord({ id, key: iconKeyFor(item), pipeline: 3, blob: tile, sourceUrl: `https://${id}.example/favicon.ico`, width, height: width, kind: 'full', transient: false, attempts: 0, resolvedAt: Date.now() });
+    }
+    await persistState();
+    window.__fetches.length = 0;
+  });
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await waitUntil(page, async () => (await getIconRecord('redraw'))?.pipeline === TomorinIcons.PIPELINE && iconQueue.length === 0 && iconWorkers === 0, 'a small favicon tile from version 3 should be drawn again');
+  const versionThree = await page.evaluate(async () => {
+    const pick = record => ({ pipeline: record.pipeline, kind: record.kind, width: record.width, source: record.sourceUrl });
+    return { redraw: pick(await getIconRecord('redraw')), keep: pick(await getIconRecord('keep-v3')), fetches: window.__fetches };
+  });
+  assert(versionThree.redraw.kind === 'full' && versionThree.redraw.width === 32 && versionThree.redraw.source === 'https://redraw.example/favicon.ico',
+    `the small favicon should be drawn again, got ${JSON.stringify(versionThree.redraw)}`);
+  assert(versionThree.keep.pipeline === 3, `other version 3 tiles should be kept, got ${JSON.stringify(versionThree.keep)}`);
+  assert(!versionThree.fetches.some(url => url.includes('keep-v3.example')), 'kept tiles must not be looked up again');
+
+  console.log(JSON.stringify({ firstPaint, after, reloadFetches: reload.fetches.length, versionThree: { redraw: versionThree.redraw.pipeline, keep: versionThree.keep.pipeline } }, null, 2));
   await browser.close();
 })().catch(error => {
   console.error(error.message);

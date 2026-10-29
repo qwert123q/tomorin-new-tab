@@ -1,4 +1,5 @@
-// Icon choice: the sharpest square icon wins, small favicons are framed,
+// Icon choice: the sharpest square icon wins, small favicons get room without a
+// visible edge,
 // sites without icons get a letter tile, and the edit dialog offers every
 // distinct option.
 const path = require('path');
@@ -74,6 +75,20 @@ async function waitForRecords(page, count) {
       if (url === 'https://www.tiktok.com/brand-wide.png') return image(await png(1200, 630));
       if (url === 'https://tiny.example/') return html('<link rel="icon" href="/favicon-16.png">');
       if (url === 'https://tiny.example/favicon-16.png') return image(await png(16, 16, { transparent: true, mark: '#1d4ed8' }));
+      if (url === 'https://boat.example/') return html('<link rel="icon" href="/favicon-32.png">');
+      if (url === 'https://boat.example/favicon-32.png') {
+        // A small opaque favicon whose blue gets darker towards the bottom.
+        const canvas = new OffscreenCanvas(32, 32);
+        const ctx = canvas.getContext('2d');
+        const gradient = ctx.createLinearGradient(0, 0, 0, 32);
+        gradient.addColorStop(0, '#6fb9ff');
+        gradient.addColorStop(1, '#52a6fa');
+        ctx.fillStyle = gradient;
+        ctx.fillRect(0, 0, 32, 32);
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(10, 11, 13, 9);
+        return image(await canvas.convertToBlob({ type: 'image/png' }));
+      }
       if (url === 'https://ring.example/') return html('<link rel="apple-touch-icon" href="/ring.png">');
       if (url === 'https://ring.example/ring.png') {
         // A see-through logo: a thick ring on a transparent background.
@@ -99,6 +114,7 @@ async function waitForRecords(page, count) {
         item('tiny', 'Tiny', 'https://tiny.example', 'a1'),
         item('none', '没有图标', 'https://none.example', 'a2'),
         item('ring', 'Ring', 'https://ring.example', 'a3'),
+        item('boat', 'Boat', 'https://boat.example', 'a4'),
       ],
       tombstones: [],
       settings: { currentPage: 0, searchEngine: 'default', iconDensity: 'small', iconDensityAt: 0, wallpaper: { type: 'none' } },
@@ -109,7 +125,7 @@ async function waitForRecords(page, count) {
   });
 
   await page.goto(pageUrl, { waitUntil: 'domcontentloaded' });
-  await waitForRecords(page, 4);
+  await waitForRecords(page, 5);
 
   const resolved = await page.evaluate(async () => {
     const records = Object.fromEntries((await getAllIconRecords()).map(record => [record.id, record]));
@@ -125,6 +141,7 @@ async function waitForRecords(page, count) {
       tiny: { width: records.tiny.width, kind: records.tiny.kind, ...(await pixels(records.tiny.blob, [[24, 128], [128, 128]])) },
       none: { blob: records.none.blob, kind: records.none.kind },
       ring: { kind: records.ring.kind, ...(await pixels(records.ring.blob, [[4, 4], [128, 128], [128, 45]])) },
+      boat: { width: records.boat.width, kind: records.boat.kind, ...(await pixels(records.boat.blob, Array.from({ length: 256 }, (_, y) => [70, y]))) },
       srcs: Object.fromEntries([...document.querySelectorAll('.shortcut-card')].map(card => [card.dataset.id, card.querySelector('img').getAttribute('src')])),
       stamps: state.shortcuts.map(item => `${item.editedAt}/${item.movedAt}`),
       fetches: window.__fetches,
@@ -143,6 +160,15 @@ async function waitForRecords(page, count) {
   assert(resolved.ring.kind === 'logo', `a see-through logo should stay a logo, got ${resolved.ring.kind}`);
   assert(ringCorner[3] === 0 && ringHole[3] === 0, `no background may be added behind a transparent logo, got corner ${ringCorner} hole ${ringHole}`);
   assert(ringStroke[3] > 200 && ringStroke[0] > 180, `the logo itself should be drawn, got ${ringStroke}`);
+  // A small favicon is drawn smaller, and the space around it continues its own
+  // colours: walking down the tile there is no sudden step at its edges.
+  assert(resolved.boat.kind === 'full' && resolved.boat.width === 32, `a small opaque favicon should fill the tile, got ${resolved.boat.kind} ${resolved.boat.width}`);
+  const boatColumn = resolved.boat.points;
+  const steps = boatColumn.slice(1).map((point, index) => point.slice(0, 3).reduce((sum, value, channel) => sum + Math.abs(value - boatColumn[index][channel]), 0));
+  const boatStep = Math.max(...steps);
+  assert(boatStep <= 6, `a small favicon must not show an edge around it, largest colour step ${boatStep} at y=${steps.indexOf(boatStep)}`);
+  assert(boatColumn.every(point => point[3] === 255), 'the tile around a small favicon should be opaque');
+  assert(boatColumn[0][0] - boatColumn[255][0] > 20, `the colour above and below the favicon should follow its gradient, got ${boatColumn[0]} and ${boatColumn[255]}`);
   assert(resolved.none.blob === null && resolved.none.kind === 'letter', 'sites without icons should record a letter tile');
   assert(resolved.srcs.none.startsWith('data:image/svg+xml') && decodeURIComponent(resolved.srcs.none).includes('没'), 'letter tile should use the first character of the name');
   assert(resolved.srcs.tt.startsWith('blob:') && resolved.srcs.tiny.startsWith('blob:'), 'found icons should render from the local cache');
@@ -200,6 +226,7 @@ async function waitForRecords(page, count) {
   console.log(JSON.stringify({
     sharpest: `${resolved.tt.source.split('/').pop()} (${resolved.tt.kind})`,
     smallFavicon: `${resolved.tiny.width}px ${resolved.tiny.kind}, no frame`,
+    smallOpaqueFavicon: `${resolved.boat.width}px ${resolved.boat.kind}, largest step ${boatStep}`,
     transparentLogo: resolved.ring.kind,
     noIcon: 'letter tile',
     dialog: labels.join(' '),

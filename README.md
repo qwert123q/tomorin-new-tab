@@ -23,7 +23,7 @@ Tomorin New Tab is a lightweight, local-first Chrome new tab extension inspired 
 ### Icons
 
 - Picks the sharpest icon each site offers. It checks icons declared by the page, the web app manifest, Apple touch icons, the Google and DuckDuckGo favicon services, and the mobile site when everything else is small. Every candidate is downloaded and measured, and the largest square one wins.
-- Icons are shown the way the site drew them: empty transparent margins are trimmed, rounded-square and round icons fill the tile, and transparent logos stay transparent. Nothing is drawn behind them.
+- Icons are shown the way the site drew them: empty transparent margins are trimmed, rounded-square and round icons fill the tile, and transparent logos stay transparent. Nothing is drawn behind them. A tiny favicon on a plain square is drawn a little smaller so it stays sharp, and its own background carries on to the tile edge without a visible border.
 - Sites without any icon get a coloured tile with the first character of their name.
 - The edit dialog offers Auto, every distinct candidate with its size, a letter tile, or your own upload.
 - Icons are cached in IndexedDB. Looking up icons only touches that cache: it never changes your shortcuts and never causes sync traffic.

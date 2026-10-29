@@ -748,7 +748,7 @@ async function hydrateShortcutIcons() {
     }
 
     const record = byId.get(item.id);
-    if (record && record.pipeline === iconKit.PIPELINE && record.key === key) {
+    if (drawnInCurrentStyle(record) && record.key === key) {
       if (record.blob) setIconDisplay(item.id, key, record.blob);
       else if (!shown?.interim) dropIconDisplay(item.id);
     } else if (record?.blob && (record.pipeline ? record.key === key : legacyRecordMatches(record, item))) {
@@ -800,7 +800,7 @@ async function queueStaleIcons() {
     const key = iconKeyFor(item);
     if (key === 'letter' || item.icon?.type === 'blob') continue;
     const record = byId.get(item.id);
-    const current = record && record.pipeline === iconKit.PIPELINE && record.key === key;
+    const current = drawnInCurrentStyle(record) && record.key === key;
     if (!current) {
       queueIcon(item.id);
       continue;
@@ -874,6 +874,15 @@ async function resolveIcon(id) {
   await storeIconResult(id, key, result, { complete: complete && !retry, retry });
 }
 
+// Tiles from version 3 still look right, except small favicons drawn on one
+// flat colour, which could show an edge around the favicon: those are redrawn.
+function drawnInCurrentStyle(record) {
+  if (record?.pipeline === iconKit.PIPELINE) return true;
+  if (record?.pipeline !== 3) return false;
+  const small = Math.min(record.width || 0, record.height || 0) < 64 || String(record.sourceUrl || '').includes('/_favicon/');
+  return !(record.kind === 'full' && small);
+}
+
 function iconSide(entry) {
   if (!entry?.blob) return -1;
   if (entry.kind === 'legacy') return 0;
@@ -883,18 +892,19 @@ function iconSide(entry) {
 async function storeIconResult(id, key, result, { complete = true, retry = false } = {}) {
   const existing = await getIconRecord(id).catch(() => null);
   const shown = iconDisplay.get(id);
-  const sameTarget = existing?.blob && (existing.key === key || (shown?.interim && existing.pipeline !== iconKit.PIPELINE));
+  const sameTarget = existing?.blob && (existing.key === key || (shown?.interim && !drawnInCurrentStyle(existing)));
   // A lookup that found nothing, or was cut short, never replaces a picture
   // with a worse one (for example another tab finishing a slower lookup). A
   // tile drawn by an older version is only kept when nothing was found.
-  const currentStyle = existing?.pipeline === iconKit.PIPELINE;
+  const currentStyle = drawnInCurrentStyle(existing);
   if (sameTarget && (!result || (currentStyle && !complete && iconSide(existing) >= iconSide(result)))) {
     result = {
       blob: existing.blob,
       sourceUrl: existing.sourceUrl || '',
       width: existing.width || 0,
       height: existing.height || 0,
-      kind: existing.pipeline ? existing.kind : 'legacy',
+      // Kept for now, but any picture found later replaces an old-style tile.
+      kind: currentStyle ? existing.kind : 'legacy',
     };
   }
   // Some requests failed: a sharper icon may exist, so look again later.
@@ -1163,7 +1173,7 @@ async function handleShortcutSubmit(event) {
   render();
   if (!iconResolverDisabled()) {
     const record = await getIconRecord(saved.id).catch(() => null);
-    if (!record || record.key !== iconKeyFor(saved) || record.pipeline !== iconKit.PIPELINE) queueIcon(saved.id);
+    if (!record || record.key !== iconKeyFor(saved) || !drawnInCurrentStyle(record)) queueIcon(saved.id);
   }
 }
 
